@@ -1,6 +1,8 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
 generator client {
   provider = "prisma-client"
   output   = "../app/generated/prisma"
@@ -11,8 +13,46 @@ datasource db {
 }
 
 model User {
-  id   Int    @id @default(autoincrement())
-  name String
-  email String @uniqe
+  id         Int        @id @default(autoincrement())
+  email      String     @unique
+  name       String?
+  notionId   String     @unique
+  createdAt  DateTime   @default(now())
+  snapshots  Snapshot[]
+  conflicts1 Conflict[] @relation("ConflictUser1")
+  conflicts2 Conflict[] @relation("ConflictUser2")
+}
 
+model Page {
+  id           Int        @id @default(autoincrement())
+  tittle       String     @unique
+  notionPageId String     @unique
+  snapshots    Snapshot[]
+  conflicts    Conflict[]
+  createdAt    DateTime   @default(now())
+}
+
+model Snapshot {
+  id        Int      @id @default(autoincrement())
+  blockId   String
+  pageId    Int
+  userId    Int
+  page      Page     @relation(fields: [pageId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Conflict {
+  id         Int       @id @default(autoincrement())
+  pageId     Int
+  blockId    String
+  status     String
+  resolvedBy String
+  user1Id    Int
+  user2Id    Int
+  user1      User      @relation("ConflictUser1", fields: [user1Id], references: [id])
+  user2      User      @relation("ConflictUser2", fields: [user2Id], references: [id])
+  page       Page      @relation(fields: [pageId], references: [id])
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
 }
