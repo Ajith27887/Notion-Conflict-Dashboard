@@ -4,7 +4,7 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../app/generated/prisma"
 }
 
@@ -17,6 +17,7 @@ model User {
   email      String     @unique
   name       String?
   notionId   String     @unique
+  workspaceId String 
   createdAt  DateTime   @default(now())
   snapshots  Snapshot[]
   conflicts1 Conflict[] @relation("ConflictUser1")
@@ -26,6 +27,7 @@ model User {
 model Page {
   id           Int        @id @default(autoincrement())
   tittle       String     @unique
+  workspaceId String
   notionPageId String     @unique
   snapshots    Snapshot[]
   conflicts    Conflict[]
