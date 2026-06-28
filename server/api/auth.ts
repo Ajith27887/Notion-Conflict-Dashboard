@@ -1,18 +1,16 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { Client } from "@notionhq/client";
-import { BotUserObjectResponse } from "@notionhq/client/build/src/api-endpoints";
-import { Prisma } from "@/app/generated/prisma/browser";
-import { PrismaClient } from "@prisma/client/extension";
-import prisma from "../PrismaClient";
+import { BotUserObjectResponse } from "@notionhq/client/build/src/api-endpoints.js";
+import prisma from "../PrismaClient.js";
 
 
 const router = express.Router();
-const redirectUri = "http://localhost:3000/auth/callback"
+const redirectUri = "http://localhost:3001/auth/callback"
 
 router.get("/", (req: Request, res: Response) => {
 	const clientId = process.env.CLIENT_ID;
-	const authorization = `https://notion.com${clientId}&response_type=code&owner=user&redirect_uri=${redirectUri}`
+	const authorization = `https://api.notion.com/v1/oauth/authorize?client_id=${clientId}&response_type=code&owner=user&redirect_uri=${encodeURIComponent(redirectUri)}`
 	res.redirect(authorization)
 })
 
@@ -51,20 +49,36 @@ router.get("/callback",async (req: Request, res: Response) => {
                 const userName = userProfile.name;
                 const userAvatar = userProfile.avatar_url;
                 
-                let userEmail = null;
+                let userEmail: string | null = null;
                 if ("person" in userProfile && userProfile.person) {
-                    userEmail = userProfile.person.email;
+                    userEmail = userProfile.person.email ?? null;
                 }
-				const newUser = await prisma.user.create({
-					data : {
-						name: userName,
-						email: userProfile.person.email,
-						workspaceId:  workspaceId,
-						notionId:""
-					}
-				}) 
-                console.log("Successfully extracted:", { workSpaceName,workspaceId, userName, userEmail });
 
+                if (!userEmail) {
+                    return res.status(400).send("User email missing from Notion profile.");
+                }
+                if (!workspaceId) {
+                    return res.status(400).send("Workspace ID missing from Notion response.");
+                }
+			
+				const newUser = await prisma.user.upsert({
+					where :{ notionId: userProfile.id },
+					update : {
+						name: userName,
+						email: userEmail,
+						workspaceId:  workspaceId,
+						avatar : userAvatar
+					},
+					create : {
+						name: userName,
+						email: userEmail,
+						workspaceId:  workspaceId,
+						notionId: userProfile.id,
+						avatar : userAvatar
+					}
+				})
+                console.log("Successfully extracted:", { workSpaceName,workspaceId, userName, userEmail });
+				res.redirect("http://localhost:3000/Dashboard")
                 return res.json({ workSpaceName,workspaceId, userName, userEmail });
             } else {
                 return res.status(400).send("Incomplete user profile received from Notion.");
@@ -75,7 +89,8 @@ router.get("/callback",async (req: Request, res: Response) => {
         
 
 	} catch (error) {
-		res.status(400).send("AccessToken fetch error")
+		console.error("OAuth callback error:", error)
+		res.status(400).json({ message: "AccessToken fetch error", error: error instanceof Error ? error.message : String(error) })
 	}
 
 

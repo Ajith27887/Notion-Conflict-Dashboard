@@ -17,7 +17,8 @@ model User {
   email      String     @unique
   name       String?
   notionId   String     @unique
-  workspaceId String 
+  workspaceId String
+  avatar String?
   createdAt  DateTime   @default(now())
   snapshots  Snapshot[]
   conflicts1 Conflict[] @relation("ConflictUser1")
