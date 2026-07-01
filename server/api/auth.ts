@@ -78,8 +78,7 @@ router.get("/callback",async (req: Request, res: Response) => {
 					}
 				})
                 console.log("Successfully extracted:", { workSpaceName,workspaceId, userName, userEmail });
-				res.redirect("http://localhost:3000/Dashboard")
-                return res.json({ workSpaceName,workspaceId, userName, userEmail });
+                return res.redirect("http://localhost:3000/Dashboard");
             } else {
                 return res.status(400).send("Incomplete user profile received from Notion.");
             }

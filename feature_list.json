@@ -1,0 +1,115 @@
+{
+  "project": "concord-notion-conflict-dashboard",
+  "last_updated": "2026-07-01",
+  "rules": {
+    "single_active_feature": true,
+    "passing_requires_evidence": true,
+    "do_not_skip_verification": true
+  },
+  "status_legend": {
+    "not_started": "Work has not begun.",
+    "in_progress": "The feature is the current active task.",
+    "blocked": "Work cannot continue until a documented blocker is resolved.",
+    "passing": "Required verification has passed and evidence is recorded."
+  },
+  "features": [
+    {
+      "id": "auth-001",
+      "priority": 1,
+      "area": "auth",
+      "title": "Notion OAuth login redirect",
+      "user_visible_behavior": "Clicking 'Continue with Notion' sends the user to Notion's authorize screen.",
+      "status": "passing",
+      "verification": [
+        "Start the server: cd server && npm start.",
+        "curl -s -o /dev/null -w '%{http_code} %{redirect_url}\\n' http://localhost:3001/auth/",
+        "Assert HTTP 302 and the redirect URL points to api.notion.com/v1/oauth/authorize with the configured client_id and redirect_uri."
+      ],
+      "evidence": [
+        "server/api/auth.ts router.get('/') builds the authorize URL and calls res.redirect.",
+        "Covered by the ./init.sh baseline smoke check."
+      ],
+      "notes": "Requires CLIENT_ID in .env."
+    },
+    {
+      "id": "auth-002",
+      "priority": 2,
+      "area": "auth",
+      "title": "OAuth callback upserts the user and redirects to /Dashboard",
+      "user_visible_behavior": "After authorizing on Notion, the user is returned, their profile is stored, and they land on /Dashboard.",
+      "status": "passing",
+      "verification": [
+        "Complete the Notion OAuth flow against http://localhost:3001/auth/callback with a valid code.",
+        "Verify a User row is upserted in Postgres (email, name, notionId, workspaceId, avatar).",
+        "Verify the browser is redirected to http://localhost:3000/Dashboard exactly once (no double-send)."
+      ],
+      "evidence": [
+        "Fixed double-send in server/api/auth.ts success branch: now `return res.redirect('http://localhost:3000/Dashboard')` only (removed the trailing res.json).",
+        "Error paths verified 2026-07-01: GET /auth/callback (no code) -> HTTP 400; GET /auth/callback?code=bogus -> HTTP 400 (Notion rejects), 0 occurrences of ERR_HTTP_HEADERS_SENT in server log.",
+        "Baseline smoke check still passes after the change.",
+        "Manual OAuth run verified 2026-07-01: real Notion login redirects once to /Dashboard (404 there is expected until dash-001) and the User row was upserted correctly in Postgres."
+      ],
+      "notes": "Passing. Success path confirmed by a manual Notion OAuth run (single 302 to /Dashboard + User upsert). The /Dashboard 404 is tracked separately by dash-001. (.env key is CLIENT_SECERT and the code matches it - left as-is on purpose.)"
+    },
+    {
+      "id": "dash-001",
+      "priority": 3,
+      "area": "dashboard",
+      "title": "/Dashboard route renders after login",
+      "user_visible_behavior": "An authenticated user sees the dashboard shell at /Dashboard instead of a 404.",
+      "status": "not_started",
+      "verification": [
+        "Start the frontend: npm run dev.",
+        "curl -s -o /dev/null -w '%{http_code}\\n' http://localhost:3000/Dashboard",
+        "Assert HTTP 200 and the dashboard shell renders."
+      ],
+      "evidence": [],
+      "notes": "No app/Dashboard route exists yet; the callback already redirects here."
+    },
+    {
+      "id": "sync-001",
+      "priority": 4,
+      "area": "sync",
+      "title": "Fetch and snapshot Notion pages/blocks per workspace",
+      "user_visible_behavior": "After connecting, the user's Notion pages and block snapshots are stored for the workspace.",
+      "status": "not_started",
+      "verification": [
+        "Trigger a sync for a connected workspace.",
+        "Verify Page rows exist for the workspace (notionPageId, tittle, workspaceId).",
+        "Verify Snapshot rows are created linking blockId, pageId, and userId."
+      ],
+      "evidence": [],
+      "notes": "Prisma models Page and Snapshot already exist in prisma/schema.prisma."
+    },
+    {
+      "id": "conflict-001",
+      "priority": 5,
+      "area": "conflict",
+      "title": "Detect concurrent edits and record Conflict rows",
+      "user_visible_behavior": "When two users edit the same block around the same time, a conflict is recorded.",
+      "status": "not_started",
+      "verification": [
+        "Create two snapshots for the same blockId by two different users.",
+        "Run conflict detection.",
+        "Verify a Conflict row is created with pageId, blockId, user1Id, user2Id, and status='open'."
+      ],
+      "evidence": [],
+      "notes": "Prisma model Conflict already exists (relations ConflictUser1/ConflictUser2)."
+    },
+    {
+      "id": "conflict-002",
+      "priority": 6,
+      "area": "dashboard",
+      "title": "Dashboard lists conflicts with status and resolver",
+      "user_visible_behavior": "The dashboard shows detected conflicts with their status and who resolved them.",
+      "status": "not_started",
+      "verification": [
+        "Seed at least one Conflict row.",
+        "Open http://localhost:3000/Dashboard.",
+        "Verify the conflict appears in the list with its status and resolvedBy value."
+      ],
+      "evidence": [],
+      "notes": "Depends on dash-001 and conflict-001."
+    }
+  ]
+}
