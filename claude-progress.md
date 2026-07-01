@@ -7,8 +7,8 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `dash-001` (create the `/Dashboard` route so
-  the post-login redirect lands on a real page instead of a 404). `auth-002` is `passing`.
+- Current highest-priority unfinished feature: `sync-001` (fetch and snapshot Notion
+  pages/blocks per workspace). `auth-001`, `auth-002`, and `dash-001` are `passing`.
 - Current blocker: none.
 
 ## Session Log
@@ -54,3 +54,27 @@
   redirect lands on a real page).
 - Update: manual OAuth run confirmed (single 302 to `/Dashboard`, User upsert correct).
   `auth-002` flipped to `passing`. Next feature is `dash-001`.
+
+### Session 003
+
+- Date: 2026-07-01
+- Goal: Implement `dash-001` — add the `/Dashboard` route so the post-login redirect
+  lands on a real page (200) instead of a 404.
+- Completed: Added `app/Dashboard/page.tsx` — a server component (no `"use client"`, no
+  data fetching) rendering the dashboard shell (header + placeholder region), matching the
+  Tailwind idiom in `app/page.tsx`. Folder is capital-`D` `app/Dashboard/` to match the
+  exact redirect target confirmed in `server/api/auth.ts:81`. No other files changed.
+- Scope note: shell only. Listing conflicts is `conflict-002` (extends this file later,
+  after `conflict-001`). No auth gate added — the dash-001 verification curls `/Dashboard`
+  with no session and expects 200.
+- Verification run: (1) `./init.sh` baseline smoke check still PASSES (`/auth/` → 302,
+  `/` → 200). (2) `npm run dev`, then `curl http://localhost:3000/Dashboard` → **HTTP 200**
+  (was 404); body contains the shell copy "Edit conflicts detected across your Notion
+  workspace." Dev server torn down (port 3000 → 000), clean state.
+- Evidence captured: recorded in `feature_list.json` under `dash-001.evidence`.
+- Commits: pending (`feat(dashboard): add /Dashboard shell route (dash-001)`).
+- Files or artifacts updated: `app/Dashboard/page.tsx` (new), `feature_list.json`,
+  `claude-progress.md`.
+- Known risk or unresolved issue: none.
+- Next best step: `sync-001` — fetch and snapshot Notion pages/blocks per workspace
+  (Prisma `Page`/`Snapshot` models already exist).

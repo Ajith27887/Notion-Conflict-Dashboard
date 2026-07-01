@@ -57,14 +57,19 @@
       "area": "dashboard",
       "title": "/Dashboard route renders after login",
       "user_visible_behavior": "An authenticated user sees the dashboard shell at /Dashboard instead of a 404.",
-      "status": "not_started",
+      "status": "passing",
       "verification": [
         "Start the frontend: npm run dev.",
         "curl -s -o /dev/null -w '%{http_code}\\n' http://localhost:3000/Dashboard",
         "Assert HTTP 200 and the dashboard shell renders."
       ],
-      "evidence": [],
-      "notes": "No app/Dashboard route exists yet; the callback already redirects here."
+      "evidence": [
+        "Added app/Dashboard/page.tsx: a server component (no data fetching) rendering the dashboard shell (header + placeholder region). Root app/layout.tsx wraps it.",
+        "Redirect target confirmed from source: server/api/auth.ts:81 returns res.redirect('http://localhost:3000/Dashboard') (capital-D), matching the app/Dashboard/ folder.",
+        "Verified 2026-07-01: ./init.sh baseline smoke check still PASSES (/auth/ -> 302, / -> 200).",
+        "Verified 2026-07-01: npm run dev, then curl http://localhost:3000/Dashboard -> HTTP 200 (was 404); response body contains the shell copy 'Edit conflicts detected across your Notion workspace.' Dev server torn down (port 3000 -> 000), clean state."
+      ],
+      "notes": "Passing. Shell only (200 render) — listing conflicts is tracked by conflict-002, which will extend app/Dashboard/page.tsx once conflict-001 lands. No auth gate added on purpose (the verification curls /Dashboard with no session and expects 200)."
     },
     {
       "id": "sync-001",
