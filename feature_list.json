@@ -137,7 +137,252 @@
         "Verify the conflict appears in the list with its status and resolvedBy value."
       ],
       "evidence": [],
-      "notes": "Depends on dash-001 and conflict-001."
+      "notes": "Depends on dash-001 and conflict-001. Verification seeds a Conflict row directly, so it does not hard-depend on the GET /conflicts API (conflict-003)."
+    },
+    {
+      "id": "sync-002",
+      "priority": 8,
+      "area": "sync",
+      "title": "60-second polling snapshot engine",
+      "user_visible_behavior": "Once a workspace is connected, its pages and block snapshots refresh automatically about every 60 seconds without any manual action.",
+      "status": "not_started",
+      "verification": [
+        "Start the server and connect a workspace so at least one Page row exists.",
+        "Confirm a setInterval (~60000ms) re-runs the sync-001 fetch+snapshot routine.",
+        "Wait for two intervals and verify new Snapshot rows (fresh createdAt) are appended for the same blocks.",
+        "Confirm the interval is set up once at server boot and does not stack duplicate timers on hot reload."
+      ],
+      "evidence": [],
+      "notes": "Depends on sync-001. Phase 3 polling engine. Keep the token off logs. Consider guarding against overlapping runs if a sync takes longer than the interval."
+    },
+    {
+      "id": "sync-003",
+      "priority": 9,
+      "area": "dashboard",
+      "title": "Pages list with last-synced timestamp in the dashboard",
+      "user_visible_behavior": "The dashboard lists every connected Notion page and shows when each was last synced.",
+      "status": "not_started",
+      "verification": [
+        "Seed or sync at least one Page row (tittle, workspaceId, notionPageId) with related Snapshot rows.",
+        "Open http://localhost:3000/Dashboard.",
+        "Verify each page appears with its title and a last-synced time derived from the newest related Snapshot.createdAt."
+      ],
+      "evidence": [],
+      "notes": "Depends on dash-001 and sync-001. Note the Page title field is spelled `tittle` in prisma/schema.prisma. 'Last synced' has no dedicated column; derive it from the most recent Snapshot.createdAt for the page."
+    },
+    {
+      "id": "sync-004",
+      "priority": 10,
+      "area": "dashboard",
+      "title": "Manual 'Sync Now' button",
+      "user_visible_behavior": "A 'Sync Now' button on the dashboard triggers an immediate sync and the pages list/last-synced time updates.",
+      "status": "not_started",
+      "verification": [
+        "Open http://localhost:3000/Dashboard and click 'Sync Now'.",
+        "Confirm it calls a backend sync endpoint that runs the sync-001 routine on demand.",
+        "Verify new Snapshot rows are written and the last-synced timestamp advances in the UI."
+      ],
+      "evidence": [],
+      "notes": "Depends on sync-001 and sync-003. Needs a manual-trigger endpoint (e.g. POST /sync) that reuses the same routine as the sync-002 interval."
+    },
+    {
+      "id": "conflict-003",
+      "priority": 11,
+      "area": "conflict",
+      "title": "GET /conflicts returns unresolved conflicts",
+      "user_visible_behavior": "The app can list all currently unresolved conflicts for a workspace.",
+      "status": "not_started",
+      "verification": [
+        "Seed at least one Conflict row with status='unresolved' and one with status='resolved'.",
+        "curl http://localhost:3001/conflicts",
+        "Assert only the unresolved conflict(s) are returned, including pageId, blockId, user1Id, user2Id, status, and createdAt."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-001. Standardizes on status values 'unresolved'/'resolved'. DISCREPANCY: existing conflict-001 verification uses status='open' while ALL_PHASE.md uses 'unresolved'|'resolved' — flagged for the maintainer to reconcile; new conflict entries use 'unresolved'/'resolved'."
+    },
+    {
+      "id": "conflict-004",
+      "priority": 12,
+      "area": "conflict",
+      "title": "PATCH /conflicts/:id/resolve marks a conflict resolved",
+      "user_visible_behavior": "Resolving a conflict marks it resolved, records who resolved it and when, and removes it from the unresolved list.",
+      "status": "not_started",
+      "verification": [
+        "Seed a Conflict row with status='unresolved'.",
+        "curl -X PATCH http://localhost:3001/conflicts/<id>/resolve with a resolver identity.",
+        "Verify the row now has status='resolved', a non-empty resolvedBy, and a resolvedAt timestamp.",
+        "Verify GET /conflicts (conflict-003) no longer returns that conflict."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-001 and conflict-003. SCHEMA NOTE: Conflict.resolvedBy is currently a non-null String (design intended nullable resolver). Detection (conflict-001) must therefore write a placeholder (e.g. \"\") on create, or the field should be made nullable via an additive migration — see auth-003 for the safe drift-handling pattern."
+    },
+    {
+      "id": "conflict-005",
+      "priority": 13,
+      "area": "dashboard",
+      "title": "Side-by-side conflict view with Keep-User1 / Keep-User2 resolve buttons",
+      "user_visible_behavior": "Each conflict shows User1's version next to User2's version with 'Keep User1' and 'Keep User2' buttons; resolving removes it from the list.",
+      "status": "not_started",
+      "verification": [
+        "Seed an unresolved Conflict row and open http://localhost:3000/Dashboard.",
+        "Verify the conflict renders both users' block versions side by side.",
+        "Click 'Keep User1' (or 'Keep User2') and confirm it calls PATCH /conflicts/:id/resolve.",
+        "Verify the resolved conflict disappears from the list without a full page reload."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-002, conflict-003, conflict-004. SCHEMA NOTE: the Conflict model has no user1Content/user2Content columns (ALL_PHASE.md design did). To show both versions, add those fields via an additive migration and populate them during detection (conflict-001), which in turn needs Snapshot.content — see the conflict-001 schema note."
+    },
+    {
+      "id": "dash-002",
+      "priority": 14,
+      "area": "dashboard",
+      "title": "Stat cards: total / resolved / unresolved / most active page",
+      "user_visible_behavior": "The dashboard header shows summary cards for total conflicts, resolved, unresolved, and the most active page.",
+      "status": "not_started",
+      "verification": [
+        "Seed a mix of resolved and unresolved Conflict rows across at least two pages.",
+        "Open http://localhost:3000/Dashboard.",
+        "Verify the four stat cards show correct counts and the page with the most conflicts as 'Most Active Page'."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-001. Counts derive from the Conflict table grouped by status and pageId."
+    },
+    {
+      "id": "dash-003",
+      "priority": 15,
+      "area": "dashboard",
+      "title": "Conflicts-over-time bar chart (Recharts)",
+      "user_visible_behavior": "The dashboard shows a bar chart of conflicts over time.",
+      "status": "not_started",
+      "verification": [
+        "Seed Conflict rows with createdAt across several days.",
+        "Open http://localhost:3000/Dashboard.",
+        "Verify a Recharts bar chart renders with bars bucketed by day matching the seeded data."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-001. Adds the `recharts` dependency to the root package.json."
+    },
+    {
+      "id": "dash-004",
+      "priority": 16,
+      "area": "dashboard",
+      "title": "Page health and team activity views",
+      "user_visible_behavior": "The dashboard shows which pages have the most conflicts and which users cause the most conflicts.",
+      "status": "not_started",
+      "verification": [
+        "Seed Conflict rows spread across multiple pages and users.",
+        "Open http://localhost:3000/Dashboard.",
+        "Verify a 'Page health' section ranks pages by conflict count and a 'Team activity' section ranks users by how many conflicts they are party to (user1Id or user2Id)."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-001. Team activity counts a user via either the user1Id or user2Id side of a Conflict."
+    },
+    {
+      "id": "team-001",
+      "priority": 17,
+      "area": "team",
+      "title": "GET /team lists workspace members",
+      "user_visible_behavior": "The app can list all users connected to the same workspace as one team.",
+      "status": "not_started",
+      "verification": [
+        "Seed two User rows sharing the same workspaceId.",
+        "curl http://localhost:3001/team for that workspace.",
+        "Assert both members are returned with name, email, and avatar; users from other workspaces are excluded."
+      ],
+      "evidence": [],
+      "notes": "Phase 6 workspace concept: members are Users grouped by workspaceId (already on the User model)."
+    },
+    {
+      "id": "team-002",
+      "priority": 18,
+      "area": "team",
+      "title": "Email notification when a new conflict is detected (nodemailer)",
+      "user_visible_behavior": "When a new conflict is detected, the involved team members receive an email notification.",
+      "status": "not_started",
+      "verification": [
+        "Configure nodemailer with test SMTP credentials (e.g. an Ethereal/dev transport) via .env.",
+        "Trigger conflict detection so a new Conflict row is created.",
+        "Verify a notification email is sent to the involved users (capture the message id / preview URL from the transport)."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-001. Adds `nodemailer`. SMTP creds are secrets — keep them in .env, never log or commit them."
+    },
+    {
+      "id": "team-003",
+      "priority": 19,
+      "area": "team",
+      "title": "Team members page (avatar, name, conflict count)",
+      "user_visible_behavior": "A team page shows each member's avatar, name, and how many conflicts they are involved in.",
+      "status": "not_started",
+      "verification": [
+        "Seed workspace members and Conflict rows involving them.",
+        "Open the team members page in the frontend.",
+        "Verify each member shows avatar, name, and a conflict count (conflicts where they are user1 or user2)."
+      ],
+      "evidence": [],
+      "notes": "Depends on team-001 and conflict-001."
+    },
+    {
+      "id": "team-004",
+      "priority": 20,
+      "area": "team",
+      "title": "Filter conflicts by member and new-conflict notification badge",
+      "user_visible_behavior": "The user can filter the conflicts list by team member and sees a badge on the dashboard when a new conflict arrives.",
+      "status": "not_started",
+      "verification": [
+        "Open the dashboard with conflicts involving multiple members.",
+        "Filter by one member and verify only conflicts involving that member remain.",
+        "Create a new conflict (or simulate one) and verify a notification badge appears on the dashboard."
+      ],
+      "evidence": [],
+      "notes": "Depends on conflict-002/conflict-005 and team-001."
+    },
+    {
+      "id": "polish-001",
+      "priority": 21,
+      "area": "polish",
+      "title": "Error, loading, and empty states + mobile responsiveness",
+      "user_visible_behavior": "The app handles errors gracefully, shows loading indicators while fetching, shows friendly empty states, and is usable on mobile.",
+      "status": "not_started",
+      "verification": [
+        "Load the dashboard with no conflicts and verify an empty state (e.g. 'No conflicts detected 🎉').",
+        "Simulate a failing backend call and verify an error state renders instead of a crash.",
+        "Verify loading indicators appear during data fetches.",
+        "Check the dashboard at a mobile viewport width (~375px) and confirm the layout stays usable."
+      ],
+      "evidence": [],
+      "notes": "Phase 7 polish. Broad by nature — verify per screen rather than a single assertion."
+    },
+    {
+      "id": "deploy-001",
+      "priority": 22,
+      "area": "deploy",
+      "title": "Seed demo data for showcase",
+      "user_visible_behavior": "A seed script populates realistic demo users, pages, snapshots, and conflicts so the dashboard looks populated for a demo.",
+      "status": "not_started",
+      "verification": [
+        "Run the seed script against a clean database.",
+        "Verify User, Page, Snapshot, and Conflict rows (mix of resolved/unresolved) are created.",
+        "Open http://localhost:3000/Dashboard and confirm the stat cards, chart, and lists render with the seeded data."
+      ],
+      "evidence": [],
+      "notes": "Phase 7. Keep the seed idempotent/reset-safe so it can be re-run for demos."
+    },
+    {
+      "id": "deploy-002",
+      "priority": 23,
+      "area": "deploy",
+      "title": "Deploy to Supabase + Render + Vercel",
+      "user_visible_behavior": "The app is reachable at a public URL: frontend on Vercel, backend on Render, database on Supabase.",
+      "status": "not_started",
+      "verification": [
+        "Provision the Postgres database on Supabase and run migrations against it.",
+        "Deploy the Express server to Render with the required env vars set (no secrets committed).",
+        "Deploy the Next.js frontend to Vercel pointed at the deployed backend.",
+        "Complete a live Notion OAuth login end to end and confirm the dashboard loads with real data."
+      ],
+      "evidence": [],
+      "notes": "Phase 7. Update the Notion OAuth redirect_uri to the deployed callback URL. All secrets via platform env vars, never committed."
     }
   ]
 }
