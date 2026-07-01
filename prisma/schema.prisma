@@ -19,6 +19,7 @@ model User {
   notionId   String     @unique
   workspaceId String
   avatar String?
+  accessToken String?
   createdAt  DateTime   @default(now())
   snapshots  Snapshot[]
   conflicts1 Conflict[] @relation("ConflictUser1")

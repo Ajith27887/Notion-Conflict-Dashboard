@@ -67,14 +67,16 @@ router.get("/callback",async (req: Request, res: Response) => {
 						name: userName,
 						email: userEmail,
 						workspaceId:  workspaceId,
-						avatar : userAvatar
+						avatar : userAvatar,
+						accessToken : AccessToken
 					},
 					create : {
 						name: userName,
 						email: userEmail,
 						workspaceId:  workspaceId,
 						notionId: userProfile.id,
-						avatar : userAvatar
+						avatar : userAvatar,
+						accessToken : AccessToken
 					}
 				})
                 console.log("Successfully extracted:", { workSpaceName,workspaceId, userName, userEmail });

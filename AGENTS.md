@@ -39,7 +39,8 @@ feature work on top of a broken starting state.
 - Prefer durable repo artifacts over chat summaries.
 - Do not commit code changes until the maintainer has reviewed them. Implement the
   feature, run verification, update the artifacts, then stop and wait for review —
-  commit only after the maintainer approves. (Applies from feature `sync-001` onward.)
+  commit only after the maintainer approves. (Applies to all remaining unfinished
+  features, starting with `auth-003`.)
 - Never commit secrets. `.env` holds the Notion client id/secret and must stay
   git-ignored; do not echo its values into logs or committed files.
 

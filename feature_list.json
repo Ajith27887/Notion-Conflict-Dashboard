@@ -72,8 +72,31 @@
       "notes": "Passing. Shell only (200 render) — listing conflicts is tracked by conflict-002, which will extend app/Dashboard/page.tsx once conflict-001 lands. No auth gate added on purpose (the verification curls /Dashboard with no session and expects 200)."
     },
     {
-      "id": "sync-001",
+      "id": "auth-003",
       "priority": 4,
+      "area": "auth",
+      "title": "Persist the Notion access token on the User during OAuth callback",
+      "user_visible_behavior": "After a user authorizes on Notion, their access token is saved so the app can later read their workspace on their behalf.",
+      "status": "passing",
+      "verification": [
+        "Add an accessToken field to the User model in prisma/schema.prisma and apply it to the DB (prisma migrate/db push), then npx prisma generate.",
+        "Update the prisma.user.upsert in server/api/auth.ts to store response.access_token on both create and update.",
+        "Complete an OAuth login (or exercise the upsert path) and verify the User row for that notionId has a non-null accessToken in Postgres.",
+        "Confirm ./init.sh baseline smoke check still passes and the token value is never written to logs or committed files."
+      ],
+      "evidence": [
+        "Schema: added `accessToken String?` to the User model in prisma/schema.prisma (nullable, additive).",
+        "Migration drift resolved without data loss: the pre-existing `avatar` column was in the DB but not in any migration (would have forced `prisma migrate dev` to reset). Baselined it via migration 20260701120000_baseline_avatar marked `--applied` (recorded, not executed), then applied 20260701120100_add_user_access_token via `prisma migrate deploy`. `prisma migrate status` = up to date.",
+        "DB verified 2026-07-01: User table columns now include `accessToken`; the 1 existing User row survived (no data loss). Existing row has NULL accessToken (expected until the next login).",
+        "Code: server/api/auth.ts upsert now sets `accessToken: AccessToken` in both create and update; the success console.log still omits the token (not logged).",
+        "Baseline: ./init.sh smoke check PASSES after the change (client regenerated with the new field; /auth/ -> 302, / -> 200). NOTE: baseline does not exercise the callback success path, so it is supporting evidence only.",
+        "Primary evidence confirmed 2026-07-01: maintainer performed a manual Notion OAuth login and confirmed the access token is now saved on the User (non-null accessToken persisted via the callback upsert)."
+      ],
+      "notes": "Passing. Column added, data intact, upsert writes response.access_token on create and update, baseline passes, and a manual OAuth login confirmed the token is saved. Token stored plaintext (MVP; encryption-at-rest is out of scope, noted for future hardening). Treated as a secret: never logged. sync-001 can now use this per-user token."
+    },
+    {
+      "id": "sync-001",
+      "priority": 5,
       "area": "sync",
       "title": "Fetch and snapshot Notion pages/blocks per workspace",
       "user_visible_behavior": "After connecting, the user's Notion pages and block snapshots are stored for the workspace.",
@@ -88,7 +111,7 @@
     },
     {
       "id": "conflict-001",
-      "priority": 5,
+      "priority": 6,
       "area": "conflict",
       "title": "Detect concurrent edits and record Conflict rows",
       "user_visible_behavior": "When two users edit the same block around the same time, a conflict is recorded.",
@@ -103,7 +126,7 @@
     },
     {
       "id": "conflict-002",
-      "priority": 6,
+      "priority": 7,
       "area": "dashboard",
       "title": "Dashboard lists conflicts with status and resolver",
       "user_visible_behavior": "The dashboard shows detected conflicts with their status and who resolved them.",

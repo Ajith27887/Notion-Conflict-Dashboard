@@ -8,7 +8,8 @@
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
 - Current highest-priority unfinished feature: `sync-001` (fetch and snapshot Notion
-  pages/blocks per workspace). `auth-001`, `auth-002`, and `dash-001` are `passing`.
+  pages/blocks per workspace). `auth-001`, `auth-002`, `dash-001`, and `auth-003` are
+  `passing`.
 - Current blocker: none.
 
 ## Session Log
@@ -78,3 +79,37 @@
 - Known risk or unresolved issue: none.
 - Next best step: `sync-001` — fetch and snapshot Notion pages/blocks per workspace
   (Prisma `Page`/`Snapshot` models already exist).
+
+### Session 004
+
+- Date: 2026-07-01
+- Goal: Implement `auth-003` — persist the Notion access token on the User during the
+  OAuth callback (prep for `sync-001`).
+- Completed: (1) Added `accessToken String?` to the `User` model in
+  `prisma/schema.prisma`. (2) Updated the `prisma.user.upsert` in `server/api/auth.ts` to
+  write `accessToken: AccessToken` (i.e. `response.access_token`) in both the `create` and
+  `update` blocks; the success `console.log` still omits the token.
+- Migration drift handled (data-loss guard worked): `prisma migrate dev` wanted to RESET
+  the DB because the pre-existing `avatar` column was in the DB but in no migration file. I
+  did NOT reset. Maintainer chose the clean fix: baselined `avatar` via migration
+  `20260701120000_baseline_avatar` marked `--applied` (recorded, not executed), then
+  applied `20260701120100_add_user_access_token` via `prisma migrate deploy`.
+  `prisma migrate status` = up to date; history now matches the live schema.
+- Verification run: (1) DB check — `User` columns now include `accessToken`; the 1 existing
+  User row survived (no data loss); existing row `accessToken` is NULL (expected until next
+  login). (2) `./init.sh` baseline smoke check PASSES with the regenerated client
+  (`/auth/` → 302, `/` → 200) — supporting only; it does not hit the callback success path.
+- Status: `auth-003` is `passing`. Maintainer performed a manual Notion OAuth login and
+  confirmed the access token is saved on the User (non-null `accessToken` persisted via the
+  callback upsert) — the primary evidence.
+- Commits: `auth-003` work committed and pushed after maintainer review (also tightened the
+  AGENTS.md wording of the review-before-commit rule to cover all remaining features, since
+  auth-003 now precedes sync-001).
+- Files or artifacts updated: `prisma/schema.prisma`, two new `prisma/migrations/` folders,
+  `server/api/auth.ts`, `feature_list.json`, `claude-progress.md`, `AGENTS.md`.
+- Known risk or unresolved issue: token stored plaintext (MVP; encryption-at-rest out of
+  scope, noted for future hardening). The pre-existing unnamed migration `20260617165202`
+  remains in history but is not a blocker.
+- Next best step: maintainer reviews the diff; perform one manual OAuth login to capture
+  the non-null `accessToken` evidence and flip `auth-003` to `passing`; then start
+  `sync-001`.
