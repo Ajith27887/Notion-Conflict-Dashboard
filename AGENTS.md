@@ -37,6 +37,9 @@ feature work on top of a broken starting state.
   narrow supporting fix.
 - Do not silently change verification rules during implementation.
 - Prefer durable repo artifacts over chat summaries.
+- Do not commit code changes until the maintainer has reviewed them. Implement the
+  feature, run verification, update the artifacts, then stop and wait for review —
+  commit only after the maintainer approves. (Applies from feature `sync-001` onward.)
 - Never commit secrets. `.env` holds the Notion client id/secret and must stay
   git-ignored; do not echo its values into logs or committed files.
 
@@ -79,5 +82,6 @@ Before ending a session:
 1. Update `claude-progress.md`.
 2. Update `feature_list.json`.
 3. Record any unresolved risk or blocker.
-4. Commit with a descriptive message once the work is in a safe state.
+4. Wait for maintainer review, then commit with a descriptive message once the work
+   is in a safe state and approved (see Working Rules — do not commit before review).
 5. Leave the repo clean enough for the next session to run `./init.sh` immediately.
