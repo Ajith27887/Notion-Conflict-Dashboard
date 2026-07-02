@@ -7,14 +7,103 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `sync-003` (pages list with
-  last-synced timestamp in the dashboard). `auth-001`, `auth-002`, `dash-001`,
-  `auth-003`, `sync-001`, `conflict-001`, `conflict-002`, and `sync-002` are `passing`.
-- Current blocker: none. `sync-002` implemented and verified (real 60s polling engine
-  wired into server boot, exercised live at a short interval against the real
-  connected workspace); awaiting maintainer review before commit.
+- Current highest-priority unfinished feature: `sync-004` (manual "Sync Now" button).
+  `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`, `conflict-001`,
+  `conflict-002`, `sync-002`, and `sync-003` are `passing`.
+- Current blocker: none. `sync-003` implemented and verified (dashboard now lists
+  every connected page with a derived last-synced timestamp, exercised against real
+  DB data); awaiting maintainer review before commit.
 
 ## Session Log
+
+### Session 008
+
+- Date: 2026-07-02
+- Goal: Implement `sync-003` — pages list with last-synced timestamp in the dashboard.
+- Completed: Extended `app/Dashboard/page.tsx` (the only file with real edits — no
+  schema change, no new file, no new dependency). Added a `prisma.page.findMany({
+  orderBy: { createdAt: "desc" }, include: { snapshots: { orderBy: { createdAt:
+  "desc" }, take: 1 } } })` query, fetched concurrently with the existing conflicts
+  query via `Promise.all`. Added a second section below the conflicts list, headed
+  "Connected pages", rendering one card per `Page` with its `tittle` and a "Last
+  synced" line. Formatted the timestamp with a fixed `Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })` — no date library
+  exists in the repo (confirmed via grep during planning: no date-fns/dayjs/luxon
+  anywhere), and a fixed locale/timezone keeps the rendered string deterministic
+  across environments rather than depending on server locale via bare
+  `toLocaleString()`. Handled the zero-snapshot case (`page.snapshots[0]` can be
+  `undefined`) by rendering "Never synced" — confirmed reachable by reading
+  `server/lib/sync.ts`: the `Page` upsert commits before block-listing runs, so a
+  page with zero child blocks, or one where `blocks.children.list` throws after the
+  upsert (caught by the existing per-page try/catch), leaves a real `Page` row with
+  no `Snapshot` rows. Not exercised via a live repro (no synthetic seed row created
+  for it) — verified by code inspection only, consistent with using solely the real
+  existing DB data for this feature's verification rather than seeding.
+- Planning note: used plan mode for this feature (Explore agent confirmed no reusable
+  date-formatting utility or "latest-related-record-per-parent" Prisma pattern exists
+  anywhere in the repo — `conflict.ts`'s "latest per user per block" logic is
+  hand-rolled in JS via `Map`, a different shape of problem; Plan agent then designed
+  and validated the `include: { snapshots: { take: 1 } }` approach directly against
+  the live DB before I implemented it).
+- Verification run: (1) `npx tsc --noEmit` clean. (2) Captured DB ground truth before
+  starting servers: 4 real `Page` rows (`Code Flow`, `Next js`, `Accenture`,
+  `Conflict Dasboard Flow`), each with a real newest-`Snapshot.createdAt` in the
+  `2026-07-02T10:56:0x` range — all four format to the same displayed string, `Jul 2,
+  2026, 10:56 AM`, under the chosen formatter (minute-granularity display, expected
+  since the four syncs landed in the same minute). (3) Booted both dev servers the
+  same way `init.sh` does (`setsid`, Express 3001 + Next dev 3000); `curl -s
+  http://localhost:3000/Dashboard` → **HTTP 200**, confirmed served by the run under
+  test via the server's own access log (`GET /Dashboard 200`), not assumed (same
+  discipline as `conflict-002`'s self-caught cwd bug). (4) Response-body checks used
+  occurrence counting (`grep -o ... | wc -l`), not line counting (`grep -c`) — Next.js
+  dev mode embeds both the rendered HTML and an RSC hydration payload in one response,
+  so every string legitimately appears more than once; line-counting under-detects
+  this. Confirmed: "Connected pages" heading present; "Last synced" present 8x (4
+  pages × 2 — HTML + RSC payload); all 4 real page titles present; the expected
+  formatted timestamp "Jul 2, 2026, 10:56 AM" present 8x, matching the DB ground truth
+  captured in step 2 exactly (not a placeholder); "Never synced" present 0x (correct —
+  all 4 real pages currently have snapshots). DB had 0 real `Conflict` rows at test
+  time (both `conflict-001`/`conflict-002` sessions cleaned up their synthetic rows),
+  so the conflicts section correctly rendered its pre-existing empty state, unaffected
+  by this change. Precision caveat (advisor-caught, before recording rather than
+  after): all 4 real pages' newest-Snapshot timestamps collapsed to the same displayed
+  minute, so the HTML grep alone can't distinguish "each card shows its own page's
+  correct time" from "every card coincidentally shows an identical string" — per-page
+  correctness rests on the rendered query being byte-identical to the one already
+  validated against the ground-truth script (which does return distinct correct
+  per-page values), not on the grep in isolation. (5) Background note: `sync-002`'s
+  scheduler is wired into `server.js` boot, so `npm start` during this verification
+  also started the real 60s poller; one real tick fired during the test window (DB
+  `Snapshot` count went 697 → 783, +86 — a full real sync, not caused by or related to
+  this feature's code). Because that poller runs on every server boot, the dashboard's
+  "last synced" time advances roughly every 60s the server is up — a maintainer
+  opening `/Dashboard` later should expect a later timestamp than "Jul 2, 2026, 10:56
+  AM" recorded here, not treat that as a discrepancy.
+  (6) Tore down both servers, confirmed no stray listeners on 3000/3001, then
+  re-ran the full `./init.sh` baseline: PASSES (`/auth/` → 302, `/` → 200).
+- Evidence captured: recorded in `feature_list.json` under `sync-003.evidence`.
+- Commits: none yet (change staged for maintainer review per `AGENTS.md` working
+  rules).
+- Files or artifacts updated: `app/Dashboard/page.tsx` (modified), `feature_list.json`,
+  `claude-progress.md`. Two throwaway one-off inspection scripts
+  (`server/scripts/groundTruthPages.ts`, `server/scripts/checkCounts.ts`) were created
+  during verification (same pattern as prior sessions) and deleted afterward — nothing
+  test-only left in the repo. No DB rows were seeded or need cleanup — this feature's
+  verification ran entirely against real existing data.
+- Known risk or unresolved issue: carries forward `conflict-002`'s two open risks
+  unchanged — the Dashboard's uncached Prisma read (now doing two concurrent queries
+  instead of one) still has no dynamic-rendering marker (flag before `deploy-002`'s
+  `next build`), and `init.sh`'s `EXIT` trap still doesn't always fully tear down its
+  process tree (worked around by hand again this session — one `node` process stayed
+  bound to 3001 after the first manual `kill -TERM -- -$pid` and needed a direct `kill
+  -TERM <pid>`). NEW, unfixed on purpose: the zero-snapshot ("Never synced") branch is
+  verified by inspection only, not exercised live — flag if a future session wants
+  stronger evidence for it (e.g. `sync-004`, when a real sync attempt could plausibly
+  produce a page with zero blocks).
+- Next best step: maintainer reviews the `sync-003` diff; then start `sync-004` — a
+  manual "Sync Now" button on the dashboard that triggers `syncWorkspaceForUser()` via
+  a new `POST /sync` endpoint and updates the pages list/last-synced time in the UI
+  (next unfinished feature by priority; builds directly on this session's pages list).
 
 ### Session 007
 

@@ -1,10 +1,22 @@
 import prisma from "../lib/prisma";
 
+const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "UTC",
+});
+
 export default async function Dashboard() {
-  const conflicts = await prisma.conflict.findMany({
-    orderBy: { createdAt: "desc" },
-    include: { page: true, user1: true, user2: true },
-  });
+  const [conflicts, pages] = await Promise.all([
+    prisma.conflict.findMany({
+      orderBy: { createdAt: "desc" },
+      include: { page: true, user1: true, user2: true },
+    }),
+    prisma.page.findMany({
+      orderBy: { createdAt: "desc" },
+      include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } },
+    }),
+  ]);
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans">
@@ -49,6 +61,34 @@ export default async function Dashboard() {
                   Resolved by:{" "}
                   <span className="font-medium text-zinc-700">
                     {conflict.resolvedBy || "—"}
+                  </span>
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <h2 className="mt-10 mb-4 text-lg font-semibold text-zinc-900">
+          Connected pages
+        </h2>
+        {pages.length === 0 ? (
+          <section className="rounded-2xl border border-dashed border-zinc-300 bg-white p-10 text-center text-zinc-500">
+            No pages synced yet.
+          </section>
+        ) : (
+          <ul className="flex flex-col gap-4">
+            {pages.map((page) => (
+              <li
+                key={page.id}
+                className="rounded-2xl border border-zinc-200 bg-white p-6"
+              >
+                <h3 className="font-semibold text-zinc-900">{page.tittle}</h3>
+                <p className="mt-2 text-sm text-zinc-500">
+                  Last synced:{" "}
+                  <span className="font-medium text-zinc-700">
+                    {page.snapshots[0]
+                      ? lastSyncedFormatter.format(page.snapshots[0].createdAt)
+                      : "Never synced"}
                   </span>
                 </p>
               </li>

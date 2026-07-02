@@ -195,14 +195,22 @@
       "area": "dashboard",
       "title": "Pages list with last-synced timestamp in the dashboard",
       "user_visible_behavior": "The dashboard lists every connected Notion page and shows when each was last synced.",
-      "status": "not_started",
+      "status": "passing",
       "verification": [
         "Seed or sync at least one Page row (tittle, workspaceId, notionPageId) with related Snapshot rows.",
         "Open http://localhost:3000/Dashboard.",
         "Verify each page appears with its title and a last-synced time derived from the newest related Snapshot.createdAt."
       ],
-      "evidence": [],
-      "notes": "Depends on dash-001 and sync-001. Note the Page title field is spelled `tittle` in prisma/schema.prisma. 'Last synced' has no dedicated column; derive it from the most recent Snapshot.createdAt for the page."
+      "evidence": [
+        "app/Dashboard/page.tsx: added a 'Connected pages' section fetching `prisma.page.findMany({ orderBy: { createdAt: 'desc' }, include: { snapshots: { orderBy: { createdAt: 'desc' }, take: 1 } } } )` concurrently with the existing conflicts query via Promise.all; renders one card per page with `page.tittle` and a 'Last synced' line formatted via a fixed en-US/UTC Intl.DateTimeFormat, falling back to 'Never synced' when a page has zero Snapshot rows.",
+        "Used real existing data (4 Page rows, 697 Snapshot rows already present from sync-001/sync-002 sessions) rather than seeding synthetic rows -- this feature's verification steps were already satisfiable from live product data.",
+        "Captured DB ground truth directly before starting servers: 4 pages (Code Flow, Next js, Accenture, Conflict Dasboard Flow) each with a distinct newest-Snapshot.createdAt in the 2026-07-02T10:56:0x range, all formatting to 'Jul 2, 2026, 10:56 AM' under the chosen formatter.",
+        "Booted both dev servers the same way init.sh does (setsid, Express 3001 + Next dev 3000); curl -s http://localhost:3000/Dashboard -> HTTP 200, confirmed served by the run under test via the server's own access log ('GET /Dashboard 200').",
+        "Response body checks (occurrence-based grep -o | wc -l, accounting for Next.js dev mode embedding both rendered HTML and an RSC hydration payload in one response -- every string legitimately appears 2x): 'Connected pages' heading present (2 occurrences = 1 real render); 'Last synced' present 8x (4 pages x 2); all 4 real page titles present; the expected formatted timestamp 'Jul 2, 2026, 10:56 AM' present 8x, matching the DB ground truth exactly; 'Never synced' present 0x (correct, since all 4 real pages currently have snapshots); 0 real Conflict rows in DB so the conflicts section correctly rendered its existing empty state ('No conflicts to show yet'). Caveat: since all 4 real pages' newest-Snapshot timestamps collapsed to the same displayed minute, the HTML grep alone cannot distinguish 'each card shows its own page's correct time' from 'every card coincidentally shows the same string' -- per-page correctness rests on the query being byte-identical to the one validated against the ground-truth script (which does return distinct correct per-page values), not on the grep alone. Also note: because sync-002's poller is live during any server run, the displayed 'last synced' time advances roughly every 60s the server is up -- a maintainer opening the dashboard later should expect a later timestamp than 'Jul 2, 2026, 10:56 AM', not treat that as a discrepancy.",
+        "npx tsc --noEmit: clean.",
+        "./init.sh baseline smoke check re-run after the change and after full teardown: PASSES (/auth/ -> 302, / -> 200); confirmed no stray listeners on 3000/3001 afterward."
+      ],
+      "notes": "Depends on dash-001 and sync-001. Note the Page title field is spelled `tittle` in prisma/schema.prisma. 'Last synced' has no dedicated column; derived from the most recent Snapshot.createdAt for the page via a per-page `include: { snapshots: { take: 1 } }` query -- no schema change, no new dependency. Zero-snapshot pages are a real reachable state (server/lib/sync.ts commits the Page upsert before listing blocks) and are handled by rendering 'Never synced', verified by code inspection rather than a live repro (not seeded synthetically, consistent with using only real data for this feature)."
     },
     {
       "id": "sync-004",
