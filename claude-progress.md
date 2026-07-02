@@ -7,16 +7,110 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `conflict-003` (`GET /conflicts`
-  returns unresolved conflicts). `auth-001`, `auth-002`, `dash-001`, `auth-003`,
-  `sync-001`, `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, and `sync-004`
-  are `passing`.
-- Current blocker: none. `sync-004` implemented and verified (a "Sync Now" button on
-  the dashboard triggers `POST /sync`, which runs `syncWorkspaceForUser()` on demand
-  and the pages list's last-synced timestamps update in the UI once it completes);
-  awaiting maintainer review before commit.
+- Current highest-priority unfinished feature: `conflict-004` (`PATCH
+  /conflicts/:id/resolve`). `auth-001`, `auth-002`, `dash-001`, `auth-003`,
+  `sync-001`, `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, `sync-004`, and
+  `conflict-003` are `passing`.
+- Current blocker: none. `conflict-003` implemented and verified (`GET /conflicts`
+  returns only `status='unresolved'` rows as a raw JSON array, `200 []` when there are
+  none); awaiting maintainer review before commit. `sync-004` (manual "Sync Now"
+  button) is also still awaiting maintainer review from the prior session.
 
 ## Session Log
+
+### Session 010
+
+- Date: 2026-07-02
+- Goal: Implement `conflict-003` — `GET /conflicts` returns unresolved conflicts.
+- Planning: used plan mode. An Explore agent read `server/server.js`, `server/api/
+  sync.ts` (the closest existing pattern, from `sync-004`), `server/api/auth.ts`,
+  `server/lib/conflict.ts`, `prisma/schema.prisma`, and `server/PrismaClient.ts` to
+  confirm there was no existing "list resource as JSON" GET route to reuse and that
+  `Conflict` has no `workspaceId` field (no `Workspace` model exists at all — the
+  feature's global, parameterless `curl` in its own verification is therefore the
+  correct scope, not an oversight to fix). A Plan agent then designed the concrete
+  approach; before finalizing, asked the maintainer two judgment-call questions via
+  `AskUserQuestion` (both answered, "recommended" options chosen): (1) response shape —
+  full raw Prisma rows vs. a trimmed DTO — maintainer chose full raw rows, since the
+  verification wording reads as a minimum field set and `conflict-004` will need `id`
+  to PATCH; (2) verification seed strategy — same real user on both sides of a
+  directly-created `Conflict` row vs. conflict-001/002's synthetic-second-user pattern
+  — maintainer chose the same-user approach, since identity distinctness isn't
+  load-bearing when rows are seeded directly rather than via `detectConflicts()`'s
+  presence-based grouping.
+- Completed: Added `server/api/conflicts.ts` — a new Express router mirroring
+  `sync.ts`'s structure (`express.Router()`, typed `Request`/`Response`, try/catch,
+  `res.status(...).json(...)`) with `router.get('/', ...)` running
+  `prisma.conflict.findMany({ where: { status: 'unresolved' }, orderBy: { createdAt:
+  'desc' } })` and no `include` (the verification's named fields are all plain scalar
+  columns already on `Conflict`). Deliberately has **no 404 branch**, unlike `sync.ts`
+  — zero unresolved conflicts is a normal success state for a list endpoint, not a
+  missing precondition, so it returns `200 []`. Mounted in `server/server.js` as
+  `app.use('/conflicts', conflicts)` next to the existing `/auth` and `/sync` mounts.
+  No `express.json()` needed (GET, no body), no CORS change needed (already global).
+  No schema change, no new dependency, no frontend change (`app/Dashboard/page.tsx`
+  keeps its own direct Prisma read from `conflict-002`; this endpoint is not wired to
+  it — that would be scope creep for a future feature, if ever).
+- Verification hiccup found and resolved mid-session (not a code bug, an environment
+  one): a stale Express server process (PID 21606) was already listening on port 3001
+  when verification began, started well before this session's file edits (confirmed
+  via `stat` on the new/edited files vs. `ps -o lstart` on the stale PID) — almost
+  certainly a leftover from an earlier session that `init.sh`'s documented `EXIT`-trap
+  teardown gap left running. A first attempt to start a fresh server alongside it
+  printed "Server is listing to 3001" but never actually bound the port (confirmed via
+  `ss -ltnp`, which showed only the stale PID holding `LISTEN`) — so the first
+  `curl /conflicts` 404'd against the *old* pre-change code, not the new route. Killed
+  the stale process group and the non-binding duplicate, then started one clean
+  instance; the new route worked immediately afterward. Consistent with `sync-004`'s
+  session note that `server.js` runs under plain `tsx` with no watch mode and needs an
+  explicit bounce to pick up route changes — worth remembering as a recurring class of
+  false-negative in this repo's manual verification flow.
+- Verification run: (1) DB baseline before seeding: 0 `Conflict` rows (prior features'
+  synthetic rows were already cleaned up), 2 real `User` rows (id 1 and a newly-seen id
+  12 — a second real user connected since the last session), real `Page` id=1 available.
+  (2) Seeded via a throwaway, uncommitted script: `Conflict` id=6 (`status='unresolved'`,
+  `resolvedBy=''`, `user1Id=1, user2Id=1`, `pageId=1`) and id=7 (`status='resolved'`,
+  `resolvedBy='test-verification'`, `resolvedAt` set, same user/page pattern).
+  (3) After resolving the stale-process issue: `curl -s http://localhost:3001/conflicts`
+  → **HTTP 200**, body `[{"id":6,"pageId":1,"blockId":"conflict-003-test-block-
+  unresolved","status":"unresolved","resolvedBy":"","user1Id":1,"user2Id":1,
+  "createdAt":"2026-07-02T15:18:11.959Z","resolvedAt":null}]` — exactly the seeded
+  unresolved row with all six required fields present, seeded resolved row (id=7)
+  correctly excluded. Sanity-checked `GET /auth/` on the same process still → 302,
+  confirming the new mount didn't disturb existing routing. (4) Cleanup: deleted both
+  seeded `Conflict` rows via a throwaway script; DB confirmed count back to 0;
+  immediately re-curled `GET /conflicts` → **HTTP 200**, body `[]` — confirms the
+  zero-unresolved-conflicts case returns an empty array, not a 404 (the key deliberate
+  deviation from `sync.ts`'s 404-on-missing-precondition pattern). (5) `npx tsc
+  --noEmit` clean. (6) Manually-started dev server torn down; confirmed via `ss -ltnp`
+  that ports 3000/3001 were free. (7) `./init.sh` baseline smoke check re-run:
+  **PASSES** (`/auth/` → 302, `/` → 200, Postgres reachable); confirmed no stray
+  listeners remained afterward — `init.sh`'s own teardown ran cleanly this time.
+- Evidence captured: recorded in `feature_list.json` under `conflict-003.evidence`
+  (includes the stale-process troubleshooting, so the record matches what actually
+  happened).
+- Commits: none yet (change staged for maintainer review per `AGENTS.md` working
+  rules; `sync-004` from the prior session is also still pending review).
+- Files or artifacts updated: `server/api/conflicts.ts` (new), `server/server.js`
+  (2-line edit: import + mount), `feature_list.json`, `claude-progress.md`. Three
+  throwaway scripts (`server/scripts/_checkConflicts.ts`,
+  `_seedConflictsForVerification.ts`, `_cleanupConflictsVerification.ts`) were created
+  and deleted during verification — none committed, none left behind.
+- Known risk or unresolved issue: (1) confirms the pre-existing `init.sh` `EXIT`-trap
+  teardown gap (flagged by `conflict-002`/`sync-003`) is still live and can leave a
+  stale server process serving *old* code, which silently causes a false-negative
+  curl result against a *different* process than the one just started — worth a fix
+  in a future session, since it will keep costing verification time otherwise. (2)
+  Carries forward `conflict-002`'s uncached-Prisma-read / `dynamic = "force-dynamic"`
+  risk on `app/Dashboard/page.tsx` unchanged (not touched by this feature). (3) The
+  response shape and scope decisions (raw rows, global/unscoped query) were confirmed
+  with the maintainer via `AskUserQuestion` before implementation — see evidence — but
+  are still worth a final look on diff review since they shape what `conflict-004`/
+  `005` will build against.
+- Next best step: maintainer reviews the `conflict-003` diff (and the still-pending
+  `sync-004` diff); then start `conflict-004` — `PATCH /conflicts/:id/resolve` (next
+  unfinished feature by priority; will need this endpoint's `id` field, confirmed
+  present in the response shape chosen here).
 
 ### Session 009
 
