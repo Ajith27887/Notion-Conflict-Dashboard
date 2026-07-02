@@ -7,14 +7,107 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `sync-002` (60-second polling snapshot
-  engine). `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`, `conflict-001`,
-  and `conflict-002` are `passing`.
-- Current blocker: none. `conflict-002` implemented and verified (Dashboard renders
-  seeded resolved/unresolved conflicts with status and resolvedBy); awaiting maintainer
-  review before commit.
+- Current highest-priority unfinished feature: `sync-003` (pages list with
+  last-synced timestamp in the dashboard). `auth-001`, `auth-002`, `dash-001`,
+  `auth-003`, `sync-001`, `conflict-001`, `conflict-002`, and `sync-002` are `passing`.
+- Current blocker: none. `sync-002` implemented and verified (real 60s polling engine
+  wired into server boot, exercised live at a short interval against the real
+  connected workspace); awaiting maintainer review before commit.
 
 ## Session Log
+
+### Session 007
+
+- Date: 2026-07-02
+- Goal: Implement `sync-002` — 60-second polling snapshot engine.
+- Completed: Added `server/lib/syncScheduler.ts` exporting `startSyncPolling(intervalMs
+  = 60_000)` / `stopSyncPolling()`, reusing `syncWorkspaceForUser()` (`sync-001`)
+  unchanged. Selects the same "first user with a non-null `accessToken`" as
+  `runSync.ts` (`prisma.user.findFirst`), not all connected users — deliberate:
+  `conflict-001`'s detection is presence-based (2+ distinct syncing users on a block =
+  `Conflict`), so auto-syncing every connected user every 60s would flood false
+  conflicts the moment a second real user connects. The interval handle and an
+  `isRunning` flag are cached on `globalThis` (same pattern as `app/lib/prisma.ts`) so
+  a repeat `startSyncPolling()` call in the same process reuses the existing timer
+  instead of stacking a new one, and an in-flight tick makes the next tick log-and-skip
+  instead of running concurrently. Wired into `server/server.js`: `startSyncPolling()`
+  is called once inside `app.listen()`'s callback; `stopSyncPolling()` added to the
+  existing `SIGINT`/`SIGTERM` handlers next to `server.close()`. Token never logged.
+- Verification run: (1) `./init.sh` baseline first: PASSES. (2) Confirmed the stored
+  connected user's Notion `accessToken` still works and measured real sync duration
+  before designing the timing test — ran the existing `npm run sync`
+  (DB: 129 → 215 snapshots, 4 pages, +86 snapshots) and timed a second manual run at
+  ~21s (mostly Notion API latency across 4 pages' block-listing calls). (3) Exercised
+  the scheduler live with a short interval via a throwaway script (not committed):
+  called `startSyncPolling(5000)` twice back-to-back — logged "Sync polling started:
+  every 5000ms." exactly once, and the second call returned the identical handle
+  ("Same handle returned: true"), confirming within-process idempotency. (4) Let that
+  5s-interval scheduler run ~50s against the real connected workspace: the live log
+  showed several "Sync poll complete: ... 4 page(s), 86 snapshot(s)" completions
+  interleaved with "Sync poll skipped: previous run still in progress." lines — the
+  overlap guard fired for real, since each real sync (~21s) comfortably outlasts a 5s
+  tick. The visible-log completion count turned out to be an undercount (see the
+  reconciliation below) — the property being tested (ticks fire, overlaps get
+  skipped, completions write real rows) held regardless. (4b) Reconciled precisely
+  from the DB instead of trusting the terminal capture: total Snapshot rows went from
+  215 (after the token-check run) to 697 (net +482). Rather than back-compute a run
+  count from that delta (per-run size varies when a page is skipped, so the naive
+  arithmetic — 215 + 86 + 4×86 = 645 — doesn't reconcile with 697), queried one
+  specific `blockId`'s own row history directly, which is unambiguous since each run
+  writes at most one row per block: 9 total rows — 2 pre-session (2026-07-01 and an
+  earlier 2026-07-02 run) plus exactly 7 new this session, timestamped 10:53:49 and
+  10:54:38 (the two manual runs) and five more between 10:55:22 and 10:56:01 (five
+  real, non-skipped scheduler ticks) — one more real completion than the live log
+  appeared to show. Distinctness check: 86 distinct `blockId`s total (matches the real
+  workspace's block count) — confirms genuine append-only time-series growth for the
+  same blocks across every run, not new/different blocks appearing.
+  (5) Confirmed the production default without a live ~130s wait: started the real
+  server (`npm start --prefix server`) and grepped its boot log for "Sync polling
+  started: every 60000ms." — present; the tick logic itself was already proven live at
+  a shorter interval on the same code path, so this stands in for waiting two full
+  default-length intervals. (6) `./init.sh` baseline re-run after all verification:
+  PASSES. `npx tsc --noEmit` (root) clean — `server/` has no separate tsconfig/typecheck
+  step in this repo's verification path, same as the existing `server/lib/conflict.ts`
+  and `server/lib/sync.ts`. No leftover dev processes or listeners on 3000/3001; all
+  throwaway test scripts deleted.
+- Self-caught evidence-precision bug (same class as `conflict-002`'s cwd bug, caught
+  the same way — before recording it, not after): the first draft of this evidence
+  claimed "215 → 697 after the calibration run + the 4 scheduler completions," which
+  is arithmetically impossible (215 + 86 + 4×86 = 645 ≠ 697) and undercounts what the
+  DB actually shows (5 real scheduler completions for the sampled block, not 4).
+  Corrected by reconciling directly from one block's own row history instead of
+  trusting the terminal-captured log line count — see the verification run's
+  item (4b) above. Lesson for later sessions: when a delta doesn't reconcile, requery
+  the DB for ground truth rather than adjust the narrative to fit the log capture.
+- Data handling note (different from the last two sessions on purpose): the ~482 new
+  `Snapshot` rows created during this verification are real product data against the
+  real connected workspace, not synthetic seed rows — left in the DB rather than
+  cleaned up, unlike `conflict-001`/`conflict-002`'s synthetic test rows (which *were*
+  deleted because they'd otherwise pollute `team-001`/`dash-002`/`dash-004` later).
+- Scope note: `detectConflicts()` is deliberately **not** called from this interval —
+  `conflict-001`'s notes merely invite that integration for a future feature;
+  wiring it in now would violate `single_active_feature`.
+- Evidence captured: recorded in `feature_list.json` under `sync-002.evidence`.
+- Commits: none yet (change staged for maintainer review per `AGENTS.md` working
+  rules).
+- Files or artifacts updated: `server/lib/syncScheduler.ts` (new), `server/server.js`
+  (modified), `feature_list.json`, `claude-progress.md`. All throwaway
+  inspection/calibration/test scripts used during verification were deleted after use;
+  the real Snapshot rows they caused to be written were intentionally kept (see data
+  handling note above).
+- Known risk or unresolved issue: (1) first-user-only polling is a documented design
+  decision, not an oversight — flagged for review, and worth revisiting once
+  `team-001` makes multi-user workspaces real (`conflict-001`'s presence-based
+  detection has no time window, so naively syncing every connected user on every tick
+  would flood false conflicts today). (2) carries forward `conflict-002`'s two open
+  risks unchanged: the Dashboard's uncached Prisma read has no dynamic-rendering
+  marker (flag before `deploy-002`'s `next build`), and `init.sh`'s `EXIT` trap doesn't
+  always fully tear down its process tree (work around it by hand for now).
+- Next best step: maintainer reviews the `sync-002` diff; then start `sync-003` —
+  pages list with last-synced timestamp in the dashboard (next unfinished feature by
+  priority; derives "last synced" from the newest related `Snapshot.createdAt` per
+  page, which this feature's real accumulated snapshots already make possible to
+  demo).
 
 ### Session 006
 
