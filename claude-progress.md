@@ -7,14 +7,105 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `conflict-002` (dashboard lists conflicts
-  with status and resolver). `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`,
-  and `conflict-001` are `passing`.
-- Current blocker: none. `conflict-001` implemented and verified (detection created 1
-  Conflict row from seeded data, re-run confirmed dedup); awaiting maintainer review
-  before commit.
+- Current highest-priority unfinished feature: `sync-002` (60-second polling snapshot
+  engine). `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`, `conflict-001`,
+  and `conflict-002` are `passing`.
+- Current blocker: none. `conflict-002` implemented and verified (Dashboard renders
+  seeded resolved/unresolved conflicts with status and resolvedBy); awaiting maintainer
+  review before commit.
 
 ## Session Log
+
+### Session 006
+
+- Date: 2026-07-02
+- Goal: Implement `conflict-002` — dashboard lists conflicts with status and resolver.
+- Completed: Added `app/lib/prisma.ts` — a `PrismaClient` for the Next.js app (the only
+  prior instance, `server/PrismaClient.ts`, is Express-only). Same adapter pattern
+  (`@prisma/adapter-pg` + `pg.Pool` against `DATABASE_URL`, already root-level deps),
+  cached on `globalThis` outside production so Next dev's hot-reload doesn't leak a new
+  `pg.Pool` per edit. `DATABASE_URL` needed no extra wiring — Next.js auto-loads `.env`
+  from the project root (unlike the Express side's `--env-file=../.env`). Made
+  `app/Dashboard/page.tsx` an async server component that queries
+  `prisma.conflict.findMany` (ordered by `createdAt` desc, including `page`/`user1`/
+  `user2`) and renders one card per conflict: page title (falls back to `blockId`), a
+  status badge (amber=unresolved/green=resolved), both users, and "Resolved by:
+  `<resolvedBy>`" (`—` when `resolvedBy` is `""`, the placeholder `conflict-001` writes
+  for unresolved rows). Kept the original empty state when there are zero conflicts.
+  Stayed a server component (no `"use client"`) on purpose so the list renders into the
+  initial HTML — no dependency on `GET /conflicts` (`conflict-003`, still not built),
+  matching the feature's own note.
+- Risk check (no bundler workaround needed): the plan flagged Prisma's pg driver
+  adapter (wasm query compiler + `pg`) as a known friction point inside Next 16's
+  server-component bundling. Verified directly by loading the page — it worked with no
+  config changes; the anticipated `serverExternalPackages` fallback in `next.config.ts`
+  was not needed.
+- False-alarm network check: before seeding, a raw `bash /dev/tcp/db.prisma.io/5432`
+  probe (both inside and outside the Bash sandbox) failed/hung, which looked like a
+  blocking DB-reachability issue. It wasn't — Node's own `pg` connection from inside a
+  running Next/Express process connected fine (confirmed by the empty-state page
+  rendering correctly against the live DB before any seeding). Bash's `/dev/tcp` is not
+  a reliable reachability probe in this environment; don't trust it over an actual
+  in-process connection attempt next time.
+- Self-caught verification bug: the first seed+curl pass reused a shell whose cwd was
+  still `server/` (left over from `cd server && npx tsx ...`), so `npm run dev`
+  silently ran against `server/package.json` (no `dev` script there) and failed with
+  "Missing script: dev" — the `curl` that returned 200 was actually served by a
+  leftover dev-server process from an earlier probe, not by the command the draft
+  evidence claimed. Caught this before recording it as evidence (via the advisor
+  check), not after. Redid the whole verification cleanly: killed every stray `next
+  dev`/`next-server` process and `.next/dev/lock`, re-seeded, ran `npm run dev` from
+  the confirmed repo root, and this time confirmed from the **server's own log**
+  (`GET /Dashboard 200 in ...`) that the run under test actually handled the request.
+  Lesson for later sessions: after any `cd` into `server/`, either `cd` back
+  explicitly or run the next command in a subshell — don't assume cwd resets.
+- Verification run (corrected/clean pass): (1) DB before seeding: 1 `User`, 4 `Page`s,
+  0 `Conflict`s (matches `conflict-001`'s post-cleanup state). (2) Seeded a synthetic
+  second `User` (`conflict-002-test-user2@example.com`, same `workspaceId` as the real
+  user) and two `Conflict` rows against a real `pageId` via a one-off script (not
+  committed, same pattern as `conflict-001`): one `status='resolved'` with a
+  **non-empty** `resolvedBy` (`conflict-002-test-resolver@example.com` — a
+  `resolvedBy=''` seed would have made "verify the resolvedBy value" vacuous) and one
+  `status='unresolved'` with `resolvedBy=''` (to exercise the `—` fallback).
+  (3) `npm run dev` from repo root, then `curl http://localhost:3000/Dashboard` →
+  **HTTP 200**, confirmed served by the run under test via its own access log; response
+  body confirmed (via grep) to contain both seeded `blockId`s, both status strings with
+  correct badge colors, the resolver email, the "Resolved by" label, the em-dash
+  fallback, and both users' names. (4) Cleanup: deleted both seeded `Conflict` rows and
+  the synthetic test `User` via the same one-off script's cleanup counterpart; DB
+  confirmed restored to 1 `User`, 4 `Page`s, 0 `Conflict`s. (5) Stopped the dev server
+  and confirmed no process is listening on 3000/3001. (6) `./init.sh` baseline smoke
+  check re-run after cleanup: PASSES (`/auth/` → 302, `/` → 200, "Postgres reachable"
+  this time — the earlier reachability warning in this session was transient/unrelated
+  to the app). (7) `npx tsc --noEmit` clean. (8) Also cleaned up two stray dev
+  processes left over from an earlier `./init.sh` run this session whose `EXIT` trap
+  hadn't fully torn down the process tree — a pre-existing `init.sh` cleanup gap, not
+  introduced by this feature and not fixed here (flagged in `feature_list.json` notes).
+- Evidence captured: recorded in `feature_list.json` under `conflict-002.evidence`
+  (includes the cwd-bug correction, so the record matches what actually ran).
+- Commits: none yet (change staged for maintainer review per `AGENTS.md` working
+  rules). Note: `conflict-001` was already committed and pushed (`a11c5d2`) before this
+  session started — an earlier draft of this log incorrectly described it as still
+  pending review; corrected here.
+- Files or artifacts updated: `app/lib/prisma.ts` (new), `app/Dashboard/page.tsx`
+  (modified), `feature_list.json`, `claude-progress.md`. The seeded test `User` and two
+  `Conflict` rows, and the one-off seed/cleanup scripts used to create/remove them,
+  were all deleted after verification — nothing test-only was left in the repo or DB.
+- Known risk or unresolved issue: (1) carries forward `conflict-001`'s MVP limitation
+  that `resolvedBy=''` (not `null`) represents "not yet resolved" — the UI now
+  explicitly treats empty string as that case and renders `—`. (2) NEW, unfixed on
+  purpose: `app/Dashboard/page.tsx` does an uncached Prisma read in a server component
+  with no dynamic-rendering marker. `next dev` renders per-request, so this session's
+  verification is legitimately green, but `next build` (needed for `deploy-002`) may
+  try to statically prerender this route — which could bake in build-time data or fail
+  if the DB isn't reachable at build time. No build step is exercised by this repo's
+  verification yet, so adding `export const dynamic = 'force-dynamic'` now would be
+  speculative; flag it before `deploy-002`. Every later feature extending this same
+  page (`sync-003`, `dash-002`, `dash-003`, `conflict-005`) inherits this same risk.
+  (3) `init.sh`'s `EXIT` trap doesn't reliably kill its full process tree (observed
+  twice this session) — worth a look before running it unattended.
+- Next best step: maintainer reviews the `conflict-002` diff; then start `sync-002` —
+  60-second polling snapshot engine (next unfinished feature by priority).
 
 ### Session 005
 
