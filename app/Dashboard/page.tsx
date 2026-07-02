@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma";
+import SyncNowButton from "../components/sync-now-button/SyncNowButton";
 
 const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -68,9 +69,12 @@ export default async function Dashboard() {
           </ul>
         )}
 
-        <h2 className="mt-10 mb-4 text-lg font-semibold text-zinc-900">
-          Connected pages
-        </h2>
+        <div className="mt-10 mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-zinc-900">
+            Connected pages
+          </h2>
+          <SyncNowButton />
+        </div>
         {pages.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-zinc-300 bg-white p-10 text-center text-zinc-500">
             No pages synced yet.

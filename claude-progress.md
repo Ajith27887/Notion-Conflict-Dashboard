@@ -7,14 +7,109 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `sync-004` (manual "Sync Now" button).
-  `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`, `conflict-001`,
-  `conflict-002`, `sync-002`, and `sync-003` are `passing`.
-- Current blocker: none. `sync-003` implemented and verified (dashboard now lists
-  every connected page with a derived last-synced timestamp, exercised against real
-  DB data); awaiting maintainer review before commit.
+- Current highest-priority unfinished feature: `conflict-003` (`GET /conflicts`
+  returns unresolved conflicts). `auth-001`, `auth-002`, `dash-001`, `auth-003`,
+  `sync-001`, `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, and `sync-004`
+  are `passing`.
+- Current blocker: none. `sync-004` implemented and verified (a "Sync Now" button on
+  the dashboard triggers `POST /sync`, which runs `syncWorkspaceForUser()` on demand
+  and the pages list's last-synced timestamps update in the UI once it completes);
+  awaiting maintainer review before commit.
 
 ## Session Log
+
+### Session 009
+
+- Date: 2026-07-02
+- Goal: Implement `sync-004` — manual "Sync Now" button.
+- Completed: Added `server/api/sync.ts`, a new Express router (mirrors `auth.ts`'s
+  `express.Router()` pattern) with `router.post("/", ...)`: finds the connected user
+  via the same inlined query already used by `syncScheduler.ts`/`runSync.ts`
+  (`prisma.user.findFirst({ where: { accessToken: { not: null } } })` — no shared
+  helper exists for this), returns 404 if none, otherwise calls
+  `syncWorkspaceForUser(user)` (sync-001/sync-002's routine, unchanged) and responds
+  200 with `{ workspaceId, pages, snapshots, syncedAt }`; any other failure responds
+  500. Never logs the token. Mounted in `server/server.js` as `app.use("/sync", sync)`
+  → `POST http://localhost:3001/sync`. Added
+  `app/components/sync-now-button/SyncNowButton.tsx`, a `"use client"` component
+  wired next to the "Connected pages" heading in `app/Dashboard/page.tsx`: the button
+  POSTs to the backend, disables itself and shows "Syncing…" while in flight, shows
+  inline red error text on failure, and calls `router.refresh()` on success to force
+  the Dashboard server component to re-fetch fresh Prisma data. No schema change, no
+  new dependency.
+- Bug found and fixed during live browser verification (not caught by curl or
+  typecheck): the first implementation called `router.refresh()` unawaited inside the
+  `try` block and reset the loading state in `finally` — since `router.refresh()`
+  doesn't return a promise, the button was re-enabling and reverting to "Sync Now"
+  *before* the refreshed page data had actually painted, so a real click could show
+  the button as "done" while the visible "Last synced" text was still a beat stale.
+  Fixed using the documented Next.js pattern: wrapped `router.refresh()` in
+  `useTransition()`'s `startTransition`, and gated the disabled/loading state on
+  `isFetching || isPending` so it covers the re-render, not just the fetch. Re-ran the
+  same live click test after the fix and confirmed the display now advances in step
+  with the button re-enabling.
+- Verification run: (1) `npx tsc --noEmit` clean (checked before and after the
+  `useTransition` fix). (2) Backend curl: captured a DB baseline (8509 snapshots,
+  latest `createdAt` 14:14:42Z), `curl -X POST http://localhost:3001/sync` → HTTP 200,
+  body `{"workspaceId":"ddb7f940-ff25-8167-9c9f-000397b00f2f","pages":5,"snapshots":177,"syncedAt":...}`;
+  re-queried the DB and confirmed the snapshot count and latest `createdAt` both
+  advanced; grepped the server log for the access token — 0 matches. (3)
+  No-connected-user path verified without touching real data: a throwaway script
+  wrapped a query in `prisma.$transaction()`, nulled every `User.accessToken` inside
+  the transaction, confirmed the route's `findFirst` predicate correctly returned
+  `null`, then threw to force a rollback (never committed) — the real connected
+  user's token was confirmed untouched afterward. (4) Real browser verification: no
+  browser-automation tool was available in this environment (`chromium-cli` — the
+  standard path per this repo's `/run` skill fallback — was not installed, nor was
+  Playwright/Puppeteer); installed `puppeteer-core` into the session scratchpad only
+  (not added to the project) and drove the system's already-installed
+  `google-chrome-stable` headlessly, since curl cannot exercise client-side JS. Loaded
+  `/Dashboard`, captured the 5 pages' displayed "Last synced" values, waited 90s with
+  no interaction and confirmed the displayed values did **not** change (proves no
+  client-side auto-refresh, and makes a post-click change unambiguous), clicked "Sync
+  Now", confirmed it immediately showed `disabled:true`/"Syncing…", waited for
+  completion, and confirmed all 5 pages' displayed timestamps had advanced to match
+  fresh DB writes, with the button back to `disabled:false`/"Sync Now" and no error
+  text. Zero browser console/page errors. Screenshots were visually reviewed (button
+  renders correctly in both states) then deleted, not committed. (5) Error path:
+  stopped the Express server, clicked "Sync Now" in the same harness — fetch rejected
+  immediately ("Failed to fetch"), the button re-enabled (did not get stuck), and the
+  inline red error text rendered exactly that message; confirmed via a reviewed
+  screenshot; restarted the server afterward. (6) Process note: found both dev servers
+  already running in the maintainer's own terminals (`npm start` / `npm run dev`) from
+  outside this session; `server/server.js` runs via plain `tsx` with no watch mode, so
+  it had to be bounced once to load the new route (Next's dev server was left running
+  throughout — Fast Refresh picked up the frontend changes with no restart needed).
+  (7) `./init.sh` baseline smoke check re-run after full teardown of all
+  manually-managed dev processes: PASSES (`/auth/` → 302, `/` → 200); confirmed no
+  stray listeners on 3000/3001 afterward.
+- Evidence captured: full detail recorded in `feature_list.json`'s `sync-004.evidence`
+  array (7 entries).
+- Commits: none yet — per `AGENTS.md`, staged and awaiting maintainer review.
+- Files or artifacts updated: `server/api/sync.ts` (new), `server/server.js` (2-line
+  edit), `app/components/sync-now-button/SyncNowButton.tsx` (new),
+  `app/Dashboard/page.tsx` (wiring edit), `feature_list.json`, `claude-progress.md`.
+  Several throwaway scripts/driver files were created and deleted during verification
+  (DB baseline checks, the transaction-rollback check, the two Puppeteer click
+  drivers, screenshots) — none committed, none left behind.
+- Known risk or unresolved issue: (carried forward) the pre-existing
+  `dynamic = "force-dynamic"` static-rendering risk on `app/Dashboard/page.tsx`
+  (flagged by `conflict-002`, carried by `sync-003`) is now more directly relevant,
+  since `router.refresh()` depends on this route being dynamically rendered per
+  request — confirmed fine under `next dev`, not fixed here since no build step is
+  exercised by this repo's verification path yet. `SyncNowButton`'s hardcoded
+  `http://localhost:3001` is a fourth hardcoded reference to that origin in the repo
+  and will break outright under `deploy-002`'s Vercel/Render split — worth its own
+  future feature. Concurrency between a manual sync and `sync-002`'s 60s poller is
+  intentionally not coordinated (worst case: a few near-duplicate `Snapshot` rows, not
+  corruption) — documented as an MVP limitation in `feature_list.json`'s notes. No
+  fetch timeout/`AbortController` on the button — acceptable to defer given the
+  measured ~15–20s typical sync duration. This repo still has no `chromium-cli` /
+  Playwright / Puppeteer pre-installed for browser-driven verification — worth
+  considering `/run-skill-generator` in a future session so this doesn't need
+  reinstalling from scratch each time a UI interaction needs real click-testing.
+- Next best step: `conflict-003` (`GET /conflicts` returns unresolved conflicts) —
+  next-highest-priority `not_started` feature per `feature_list.json`.
 
 ### Session 008
 

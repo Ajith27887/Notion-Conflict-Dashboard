@@ -1,5 +1,6 @@
 import express from "express";
 import auth from "./api/auth.ts"
+import sync from "./api/sync.ts"
 import cors from "cors";
 import { startSyncPolling, stopSyncPolling } from "./lib/syncScheduler.ts";
 
@@ -14,6 +15,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions))
 app.use("/auth", auth);
+app.use("/sync", sync);
 
 const server = app.listen(PORT, () => {
 	console.log(`Server is listing to ${PORT}`);
