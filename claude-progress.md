@@ -7,13 +7,82 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `conflict-001` (detect concurrent edits
-  and record Conflict rows). `auth-001`, `auth-002`, `dash-001`, `auth-003`, and
-  `sync-001` are `passing`.
-- Current blocker: none. `sync-001` implemented and verified (live sync wrote 4 Page
-  rows + 86 Snapshot rows); awaiting maintainer review before commit.
+- Current highest-priority unfinished feature: `conflict-002` (dashboard lists conflicts
+  with status and resolver). `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`,
+  and `conflict-001` are `passing`.
+- Current blocker: none. `conflict-001` implemented and verified (detection created 1
+  Conflict row from seeded data, re-run confirmed dedup); awaiting maintainer review
+  before commit.
 
 ## Session Log
+
+### Session 005
+
+- Date: 2026-07-02
+- Goal: Implement `conflict-001` — detect concurrent edits and record Conflict rows.
+- Completed: Added `server/lib/conflict.ts` exporting `detectConflicts()` — the
+  reusable detection routine. It reads all `Snapshot` rows ordered by `createdAt`,
+  groups them by `blockId`, and per block keeps each distinct user's latest snapshot.
+  Blocks with 2+ distinct contributors get a `Conflict` row: the two earliest-by-
+  latest-touch contributors become `user1Id`/`user2Id`, `pageId`/`blockId` come from
+  their snapshots, `status: "unresolved"`, `resolvedBy: ""` (placeholder — the column
+  is non-null with no default; chose this over a nullable migration to keep the
+  feature at zero schema changes). Before creating, it checks for an existing
+  `Conflict` on that `blockId` + user pair (either order) and skips if found, so
+  repeated runs don't create duplicates. Added the thin trigger
+  `server/scripts/runDetectConflicts.ts` (mirrors `runSync.ts`) and a
+  `detect-conflicts` npm script in `server/package.json`. `sync-002`/`sync-004` can
+  call `detectConflicts()` directly once they exist.
+- Decision (status value): `conflict-001`'s own verification text originally said
+  `status='open'`, but `conflict-003`, `conflict-004`, `conflict-005`, and
+  `ALL_PHASE.md` all use `'unresolved'`/`'resolved'`. Writing `'open'` would have made
+  detected conflicts invisible to `GET /conflicts` and the dashboard later. Asked the
+  maintainer via AskUserQuestion during planning; no response arrived in time, so
+  proceeded with `'unresolved'` (4 entries vs. 1) and updated `conflict-001`'s
+  verification text accordingly — a documented change, not a silent one. Also updated
+  `conflict-003`'s note to drop the now-resolved DISCREPANCY flag. Flagged for
+  maintainer to confirm or override on review.
+- Scope notes: no schema change (Conflict model already had every needed column); did
+  not add `Snapshot.content` (that's `conflict-005`'s requirement, out of scope here).
+  Detection is presence-based only — `Snapshot.userId` records who *synced* a block,
+  not who *edited* it in Notion (no `last_edited_by`/`last_edited_time` captured) — and
+  has no time window (any two contributors ever seen on a block count) and no
+  pairwise-for-3+-contributors handling (only the earliest pair is flagged). All
+  recorded as known MVP limitations.
+- Verification run: (1) DB before: 1 `User` (id 1), 129 `Snapshot` rows (all
+  `userId=1`), 0 `Conflict` rows. (2) Seeded a synthetic second `User` (id 6,
+  `conflict-001-test-user2@example.com`, same `workspaceId` as user 1) and one
+  `Snapshot` (id 130) on an existing `blockId`
+  (`3267f940-ff25-80ce-8952-fd1adad9c443`)/`pageId` (1) with `userId=6`. (3) Ran
+  `npm run detect-conflicts` → "Conflict detection complete: 1 conflict(s) created.";
+  DB confirmed the row (`pageId=1`, matching `blockId`, `user1Id=1`, `user2Id=6`,
+  `status='unresolved'`, `resolvedBy=''`). (4) Re-ran the same command → "0
+  conflict(s) created"; `Conflict` count stayed at 1 — dedup confirmed. (5) `./init.sh`
+  baseline smoke check PASSES (`/auth/` → 302, `/` → 200). (6) Cleanup: deleted the
+  seeded `Conflict` (id 1), `Snapshot` (id 130), and test `User` (id 6) rows in FK
+  order after verification — the test user shared the real `workspaceId`, so leaving
+  it would have shown up as a real teammate/conflict in `team-001`/`dash-002`/
+  `dash-004` later. DB confirmed restored: 1 `User`, 129 `Snapshot` rows, 0 `Conflict`
+  rows.
+- Evidence captured: recorded in `feature_list.json` under `conflict-001.evidence`.
+- Commits: none yet (change staged for maintainer review per AGENTS.md working rules).
+- Files or artifacts updated: `server/lib/conflict.ts` (new),
+  `server/scripts/runDetectConflicts.ts` (new), `server/package.json`,
+  `feature_list.json` (`conflict-001` + `conflict-003` note), `claude-progress.md`.
+  The seeded test `User` (id 6), `Snapshot` (id 130), and resulting `Conflict` (id 1)
+  rows were deleted after verification (maintainer confirmed via AskUserQuestion) —
+  the DB is back to its pre-verification state. `conflict-002`/`conflict-003`/
+  `conflict-004` will each need to seed their own `Conflict` row for their own
+  verification.
+- Known risk or unresolved issue: the `'unresolved'` status decision was made without
+  maintainer confirmation (no response to the AskUserQuestion prompt in time) — flag
+  this specifically during review. Presence-based detection means any two users who
+  have ever both touched a block will be flagged, with no recency check; acceptable
+  for MVP per the verification as written, but worth revisiting once Notion edit
+  metadata is available.
+- Next best step: maintainer reviews the diff (and confirms/overrides the status-value
+  decision); then start `conflict-002` — dashboard lists conflicts with status and
+  resolver (extends `app/Dashboard/page.tsx`).
 
 ### Session 004
 

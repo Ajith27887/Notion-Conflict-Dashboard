@@ -1,6 +1,6 @@
 {
   "project": "concord-notion-conflict-dashboard",
-  "last_updated": "2026-07-01",
+  "last_updated": "2026-07-02",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -122,14 +122,24 @@
       "area": "conflict",
       "title": "Detect concurrent edits and record Conflict rows",
       "user_visible_behavior": "When two users edit the same block around the same time, a conflict is recorded.",
-      "status": "not_started",
+      "status": "passing",
       "verification": [
         "Create two snapshots for the same blockId by two different users.",
         "Run conflict detection.",
-        "Verify a Conflict row is created with pageId, blockId, user1Id, user2Id, and status='open'."
+        "Verify a Conflict row is created with pageId, blockId, user1Id, user2Id, and status='unresolved'."
       ],
-      "evidence": [],
-      "notes": "Prisma model Conflict already exists (relations ConflictUser1/ConflictUser2)."
+      "evidence": [
+        "Added server/lib/conflict.ts exporting detectConflicts(): groups all Snapshot rows by blockId, keeps each distinct userId's latest snapshot on that block, and for blocks with 2+ distinct contributors takes the two earliest-by-latest-touch as user1/user2. Dedupes against any existing Conflict for that blockId + user pair (either order) before creating, so re-runs don't spam duplicates. Creates with status='unresolved', resolvedBy='' (placeholder — Conflict.resolvedBy is non-null with no default; no migration needed).",
+        "Added server/scripts/runDetectConflicts.ts (thin trigger, mirrors runSync.ts) + server/package.json script 'detect-conflicts' (tsx --env-file=../.env scripts/runDetectConflicts.ts). A future sync-002 interval or endpoint can call detectConflicts() directly.",
+        "Verification status value changed from 'open' (as originally written here) to 'unresolved' to match conflict-003 (GET /conflicts filters status='unresolved'), conflict-004 (unresolved->resolved transition), conflict-005, and ALL_PHASE.md — 4 other entries vs. this one, and 'open' would have made detected conflicts invisible to the rest of the pipeline. Flagged for maintainer to confirm on review.",
+        "No schema change: the Conflict model already had every column needed (pageId, blockId, status, resolvedBy, user1Id, user2Id).",
+        "Verified 2026-07-02: DB had 1 User (id 1) and 129 Snapshot rows (all userId=1), 0 Conflict rows. Seeded a synthetic second User (id 6, email conflict-001-test-user2@example.com, same workspaceId as user 1) and one Snapshot (id 130) on an existing blockId ('3267f940-ff25-80ce-8952-fd1adad9c443')/pageId(1) with userId=6.",
+        "Ran `npm run detect-conflicts` (from server/): 'Conflict detection complete: 1 conflict(s) created.' DB query confirmed the row: pageId=1, blockId='3267f940-ff25-80ce-8952-fd1adad9c443', user1Id=1, user2Id=6, status='unresolved', resolvedBy=''.",
+        "Re-ran `npm run detect-conflicts`: 'Conflict detection complete: 0 conflict(s) created.' Conflict table count stayed at 1 row — dedup confirmed working.",
+        "Baseline: ./init.sh smoke check PASSES after the change (/auth/ -> 302, / -> 200). No schema/migration touched.",
+        "Cleanup 2026-07-02: deleted the seeded Conflict (id 1), Snapshot (id 130), and test User (id 6) rows after verification (in FK order) since the test user shared the real workspaceId and would have shown up as a real teammate/conflict in team-001/dash-002/dash-004 later. DB confirmed restored to the pre-verification state: 1 User, 129 Snapshot rows, 0 Conflict rows."
+      ],
+      "notes": "Passing. Prisma model Conflict already existed (relations ConflictUser1/ConflictUser2). MVP limitations (deferred, not built): Snapshot.userId records who synced a block, not who edited it in Notion (no last_edited_by/last_edited_time captured), so detection is presence-based (2+ distinct syncing users on a block) rather than true concurrent-edit detection; no time window (any two contributors ever seen count, regardless of how far apart); with 3+ contributors on one block only the earliest pair is flagged (Conflict is a two-party model). The seed data used to verify this (test User id 6, Snapshot id 130, Conflict id 1) was deleted after verification rather than left in the DB, since the test user shared the real workspaceId and would otherwise appear as a real teammate/conflict in team-001/dash-002/dash-004. conflict-002/003/004 will need their own seeded Conflict row for their own verification."
     },
     {
       "id": "conflict-002",
@@ -205,7 +215,7 @@
         "Assert only the unresolved conflict(s) are returned, including pageId, blockId, user1Id, user2Id, status, and createdAt."
       ],
       "evidence": [],
-      "notes": "Depends on conflict-001. Standardizes on status values 'unresolved'/'resolved'. DISCREPANCY: existing conflict-001 verification uses status='open' while ALL_PHASE.md uses 'unresolved'|'resolved' — flagged for the maintainer to reconcile; new conflict entries use 'unresolved'/'resolved'."
+      "notes": "Depends on conflict-001. Standardizes on status values 'unresolved'/'resolved'. Reconciled 2026-07-02: conflict-001's verification originally said status='open'; it was updated to 'unresolved' during conflict-001's implementation to match this entry, conflict-004, conflict-005, and ALL_PHASE.md."
     },
     {
       "id": "conflict-004",
