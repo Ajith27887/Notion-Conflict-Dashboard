@@ -7,12 +7,47 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `sync-001` (fetch and snapshot Notion
-  pages/blocks per workspace). `auth-001`, `auth-002`, `dash-001`, and `auth-003` are
-  `passing`.
-- Current blocker: none.
+- Current highest-priority unfinished feature: `conflict-001` (detect concurrent edits
+  and record Conflict rows). `auth-001`, `auth-002`, `dash-001`, `auth-003`, and
+  `sync-001` are `passing`.
+- Current blocker: none. `sync-001` implemented and verified (live sync wrote 4 Page
+  rows + 86 Snapshot rows); awaiting maintainer review before commit.
 
 ## Session Log
+
+### Session 004
+
+- Date: 2026-07-01
+- Goal: Implement `sync-001` — fetch and snapshot Notion pages/blocks per workspace.
+- Completed: Added `server/lib/sync.ts` exporting `syncWorkspaceForUser(user)` — the
+  durable, reusable sync routine. It builds an authenticated Notion client from the
+  user's stored `accessToken` (auth-003), searches pages, upserts a `Page` per page on
+  the stable `notionPageId` (title from the title-type property, fallback "Untitled";
+  `workspaceId` from the user), then lists each page's top-level blocks and creates a
+  `Snapshot { blockId, pageId, userId }` per block. The per-page block is wrapped in
+  try/catch and continues on error so a duplicate `tittle` (Page.tittle is `@unique`)
+  can't abort the run. Token is never logged; returns `{ pages, snapshots }` counts.
+  Added a thin trigger `server/scripts/runSync.ts` + a `sync` npm script in
+  `server/package.json` (`tsx --env-file=../.env scripts/runSync.ts`) that resolves the
+  first user with a non-null accessToken and calls the routine. sync-002 (interval) and
+  sync-004 (POST /sync) will reuse the same routine — deliberately not built here.
+- Scope note: no schema change, no new dependency. MVP limitations left for later: no
+  pagination, no recursion into nested blocks, no block content stored (Snapshot has no
+  content column — conflict-001 owns adding it), single-user token.
+- Verification run: (1) `./init.sh` baseline smoke check still PASSES (`/auth/` → 302,
+  `/` → 200; `npx prisma generate` OK). (2) `npm run sync` against connected workspace
+  `ddb7f940…` (user id 1) → "Sync complete: 4 page(s) upserted, 86 snapshot(s) created"
+  (token not logged). (3) DB assertions: 4 `Page` rows with `notionPageId`/`tittle`/
+  `workspaceId` populated; 86 `Snapshot` rows linking `blockId`/`pageId`/`userId`.
+- Evidence captured: recorded in `feature_list.json` under `sync-001.evidence`.
+- Commits: none yet (change staged for maintainer review per AGENTS.md working rules).
+- Files or artifacts updated: `server/lib/sync.ts` (new), `server/scripts/runSync.ts`
+  (new), `server/package.json`, `feature_list.json`, `claude-progress.md`.
+- Known risk or unresolved issue: `Page.tittle` is `@unique`, which is a schema smell for
+  page titles (two same-titled pages would skip the second); handled defensively for now.
+- Next best step: `conflict-001` — detect concurrent edits and record Conflict rows.
+  Note its schema prep (add `Snapshot.content` and reconcile `Conflict.resolvedBy`
+  nullability / `status` value 'open' vs 'unresolved').
 
 ### Session 001
 

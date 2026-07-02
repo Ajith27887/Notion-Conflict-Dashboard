@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "tsx --env-file=../.env server.js"
+    "start": "tsx --env-file=../.env server.js",
+    "sync": "tsx --env-file=../.env scripts/runSync.ts"
   },
   "author": "",
   "license": "ISC",

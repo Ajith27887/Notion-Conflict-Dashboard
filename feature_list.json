@@ -100,14 +100,21 @@
       "area": "sync",
       "title": "Fetch and snapshot Notion pages/blocks per workspace",
       "user_visible_behavior": "After connecting, the user's Notion pages and block snapshots are stored for the workspace.",
-      "status": "not_started",
+      "status": "passing",
       "verification": [
         "Trigger a sync for a connected workspace.",
         "Verify Page rows exist for the workspace (notionPageId, tittle, workspaceId).",
         "Verify Snapshot rows are created linking blockId, pageId, and userId."
       ],
-      "evidence": [],
-      "notes": "Prisma models Page and Snapshot already exist in prisma/schema.prisma."
+      "evidence": [
+        "Added the reusable sync routine server/lib/sync.ts: syncWorkspaceForUser(user) creates an authed Notion client from user.accessToken (auth-003), searches pages ({ property: 'object', value: 'page' }), upserts a Page per page on the stable notionPageId (tittle from the title-type property, fallback 'Untitled'; workspaceId from the user), then lists each page's top-level blocks and creates a Snapshot { blockId, pageId, userId } per block. Never logs the token; returns { pages, snapshots } counts.",
+        "The per-page upsert+snapshot block is wrapped in try/catch and continues on error so a duplicate `tittle` (Page.tittle is @unique) can't abort the whole run.",
+        "Added a thin trigger server/scripts/runSync.ts + server package.json script 'sync' (tsx --env-file=../.env scripts/runSync.ts). It resolves the first User with a non-null accessToken and calls the routine. The HTTP endpoint (sync-004 POST /sync) and 60s interval (sync-002) will reuse the same routine.",
+        "Baseline verified 2026-07-01: ./init.sh smoke check still PASSES (/auth/ -> 302, / -> 200); npx prisma generate OK. No schema change, no new dependency.",
+        "Live sync verified 2026-07-01: `npm run sync` against the connected workspace ddb7f940… (user id 1) printed 'Sync complete: 4 page(s) upserted, 86 snapshot(s) created' (token not logged).",
+        "DB assertions confirmed 2026-07-01: 4 Page rows with notionPageId, tittle ('Conflict Dasboard Flow', 'Accenture', 'Next js', 'Code Flow'), and workspaceId populated; 86 Snapshot rows linking blockId, pageId, and userId (all userId=1)."
+      ],
+      "notes": "Passing. Prisma models Page and Snapshot already existed; no migration. MVP limitations (deferred, not built): no pagination (first ~100 pages / ~100 blocks per page), no recursion into nested block children, no block content stored (Snapshot has no content column — conflict-001 owns adding it), single-user token drives a multi-user workspace sync. Snapshots are append-only (one row per block per run), giving sync-002 a time series."
     },
     {
       "id": "conflict-001",
