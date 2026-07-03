@@ -15,6 +15,7 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
+app.use(express.json());
 app.use("/auth", auth);
 app.use("/sync", sync);
 app.use("/conflicts", conflicts);

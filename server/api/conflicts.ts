@@ -20,4 +20,44 @@ router.get("/", async (req: Request, res: Response) => {
 	}
 });
 
+router.patch("/:id/resolve", async (req: Request, res: Response) => {
+	const id = Number(req.params.id);
+	if (!Number.isInteger(id) || id <= 0) {
+		res.status(400).json({ message: "Invalid conflict id." });
+		return;
+	}
+
+	const resolvedByRaw = req.body?.resolvedBy;
+	const resolvedBy = typeof resolvedByRaw === "string" ? resolvedByRaw.trim() : "";
+	if (!resolvedBy) {
+		res.status(400).json({ message: "resolvedBy is required." });
+		return;
+	}
+
+	try {
+		const existing = await prisma.conflict.findUnique({ where: { id } });
+		if (!existing) {
+			res.status(404).json({ message: "Conflict not found." });
+			return;
+		}
+
+		const updated = await prisma.conflict.update({
+			where: { id },
+			data: {
+				status: "resolved",
+				resolvedBy,
+				resolvedAt: new Date(),
+			},
+		});
+
+		res.status(200).json(updated);
+	} catch (error) {
+		console.error("Failed to resolve conflict:", error instanceof Error ? error.message : String(error));
+		res.status(500).json({
+			message: "Failed to resolve conflict.",
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+});
+
 export default router;

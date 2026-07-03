@@ -7,16 +7,106 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `conflict-004` (`PATCH
-  /conflicts/:id/resolve`). `auth-001`, `auth-002`, `dash-001`, `auth-003`,
-  `sync-001`, `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, `sync-004`, and
-  `conflict-003` are `passing`.
-- Current blocker: none. `conflict-003` implemented and verified (`GET /conflicts`
-  returns only `status='unresolved'` rows as a raw JSON array, `200 []` when there are
-  none); awaiting maintainer review before commit. `sync-004` (manual "Sync Now"
-  button) is also still awaiting maintainer review from the prior session.
+- Current highest-priority unfinished feature: `conflict-005` (side-by-side
+  Keep-User1/Keep-User2 view). `auth-001`, `auth-002`, `dash-001`, `auth-003`,
+  `sync-001`, `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, `sync-004`,
+  `conflict-003`, and `conflict-004` are `passing`.
+- Current blocker: none. `conflict-004` implemented and verified (`PATCH
+  /conflicts/:id/resolve` sets `status='resolved'`, `resolvedBy`, `resolvedAt`, and
+  the row drops out of `GET /conflicts`); awaiting maintainer review before commit.
+  `conflict-003` and `sync-004` are also still awaiting maintainer review from prior
+  sessions.
 
 ## Session Log
+
+### Session 011
+
+- Date: 2026-07-02
+- Goal: Implement `conflict-004` — `PATCH /conflicts/:id/resolve` marks a conflict
+  resolved.
+- Planning: used plan mode. An Explore agent read `prisma/schema.prisma` (`Conflict`
+  model), `server/api/conflicts.ts` (`conflict-003`'s `GET` route), `server/api/
+  sync.ts` (closest mutating-endpoint pattern), `server/server.js` (router mounting,
+  confirmed `express.json()` is never called anywhere in the repo), and
+  `server/PrismaClient.ts`; also confirmed via grep that no auth/session system exists
+  anywhere (`req.session`/`req.user`/passport/JWT are all unused despite
+  `jsonwebtoken`/`cookie-parser` being installed), no `req.params` usage exists yet,
+  and no Zod/validation library exists. A Plan agent then designed the concrete route
+  shape. Asked the maintainer one judgment-call question via `AskUserQuestion`
+  (idempotent-overwrite vs. `409` when re-resolving an already-resolved conflict, since
+  the verification doesn't test either way) — no response arrived in time, so proceeded
+  with the recommended option (idempotent overwrite) per plan-mode fallback guidance,
+  flagged explicitly in `feature_list.json` for maintainer review on the diff (same
+  situation `conflict-001` hit with its unconfirmed status-value decision).
+- Completed: Added `app.use(express.json())` to `server/server.js` (after `cors()`,
+  before the router mounts) — the first route in this repo to read `req.body`, so this
+  is a narrow, necessary supporting change. Added `router.patch('/:id/resolve', ...)`
+  to `server/api/conflicts.ts`: validates `:id` as a positive integer (`400` if not),
+  reads `resolvedBy` from the JSON body and requires a non-empty trimmed string (`400`
+  if missing — this is the "resolver identity" the feature's verification refers to,
+  supplied by the caller since no session exists), `404`s via `findUnique` if the
+  conflict doesn't exist, then updates `status: 'resolved'`, `resolvedBy`,
+  `resolvedAt: new Date()` and responds `200` with the full raw updated row (matching
+  `conflict-003`'s raw-row response-shape precedent). `catch` responds `500`, same
+  shape as the existing `GET` route. No schema change — `Conflict.resolvedBy` already
+  satisfies its non-null constraint via `conflict-001`'s `''` placeholder.
+- Verification run: (1) `npx tsc --noEmit` clean. (2) DB baseline before seeding: 0
+  `Conflict` rows total. Seeded via a throwaway script (`server/scripts/
+  _seedConflict004.ts`, deleted after use): `Conflict` id=8 (`pageId=1, blockId=
+  'conflict-004-test-block', user1Id=1, user2Id=1, status='unresolved', resolvedBy=''`).
+  (3) Bounced the server cleanly (confirmed no stale process held port 3001 first, per
+  `conflict-003`'s documented lesson). (4) Negative paths: `PATCH /conflicts/abc/
+  resolve` → `400`; `PATCH /conflicts/8/resolve` with `{}` → `400`, then confirmed via
+  direct DB query the row was still `unresolved`/`resolvedBy=''` (validation
+  short-circuited before any write); `PATCH /conflicts/999999999/resolve` with a valid
+  body → `404`. (5) Success path: `PATCH /conflicts/8/resolve` with
+  `{"resolvedBy":"conflict-004-test-resolver@example.com"}` → **HTTP 200**, body shows
+  `status:'resolved'`, `resolvedBy` set, `resolvedAt` set, other fields unchanged;
+  independently re-queried the DB and confirmed the identical persisted values. (6)
+  `GET /conflicts` re-curled → `200 []`, confirming id 8 no longer appears (asserted by
+  content — no other real unresolved conflicts existed at test time); sanity-checked
+  `GET /auth/` on the same process still → `302`. (7) Idempotency check: re-PATCHed
+  id=8 with a different `resolvedBy` → **HTTP 200** (not 409), both `resolvedBy` and
+  `resolvedAt` updated to the new values — confirms the idempotent-overwrite decision
+  as implemented, not just as prose. (8) Cleanup: deleted the seeded `Conflict` row;
+  DB confirmed count back to 0, matching the pre-seed baseline exactly; all three
+  throwaway scripts deleted. (9) `./init.sh` baseline smoke check re-run after full
+  teardown: **PASSES** (Postgres reachable, `/auth/` → 302, `/` → 200); confirmed via
+  `ss -ltnp` no stray listeners remained on 3000/3001.
+- Evidence captured: recorded in `feature_list.json` under `conflict-004.evidence`
+  (14 entries, including the negative paths, the idempotency check, and both flagged
+  judgment calls).
+- Commits: none yet (change staged for maintainer review per `AGENTS.md`; `conflict-003`
+  and `sync-004` from prior sessions are also still pending review).
+- Files or artifacts updated: `server/api/conflicts.ts` (new `PATCH` route),
+  `server/server.js` (1-line `express.json()` addition), `feature_list.json`,
+  `claude-progress.md`. Three throwaway scripts (`server/scripts/_seedConflict004.ts`,
+  `_checkConflict004.ts`, `_cleanupConflict004.ts`) were created and deleted during
+  verification — none committed, none left behind.
+- Known risk or unresolved issue: (1) the idempotent-overwrite-on-re-resolve decision
+  was made without maintainer confirmation (`AskUserQuestion` got no response in time)
+  — flag specifically on review, same as `conflict-001`'s precedent. (2) Spotted but
+  did not fix, out of scope (backend-only, curl-verified feature — the bug only
+  affects browser requests) — **will block `conflict-005`, read before starting it**:
+  `server/server.js`'s `corsOptions` has two typos. The one that actually breaks
+  `conflict-005`: `allowedHeaders: ['content-Typw', ...]` — a browser `PATCH` with
+  `Content-Type: application/json` triggers a CORS preflight that `curl` never
+  exercises, and `cors` will echo back the misspelled header name, so the browser
+  rejects the real request; fix is the one-character `content-Typw` → `content-Type`
+  correction. Separately, the `method` key (should be `methods`) is currently
+  *harmless* — `cors` ignores the misspelled key and falls back to its own default
+  methods list, which happens to include `PATCH`; do **not** "fix" that key to
+  `methods: "GET, POST"` as currently written without also adding `PATCH`, or it will
+  newly block the very request path that works today. An advisor review caught this
+  session's first draft of this note stating the inverse (flagging `method`→`methods`
+  as the actionable bug and missing `content-Typw` entirely) — corrected before
+  recording. (3) Carries forward the
+  pre-existing `dynamic = 'force-dynamic'` static-rendering risk on
+  `app/Dashboard/page.tsx` unchanged (not touched by this feature).
+- Next best step: maintainer reviews the `conflict-004` diff (and the still-pending
+  `conflict-003`/`sync-004` diffs); then start `conflict-005` — side-by-side conflict
+  view with Keep-User1/Keep-User2 buttons, the first feature to wire a frontend
+  `fetch()` to this new `PATCH /conflicts/:id/resolve` endpoint.
 
 ### Session 010
 
