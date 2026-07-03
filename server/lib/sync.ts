@@ -48,9 +48,9 @@ function extractTitle(page: PageObjectResponse): string {
 // the type-specific slot, then recovers type safety with a runtime guard before
 // touching rich_text. Not exhaustive by design: block types with no rich_text
 // (divider, image, child_page, table, ...) fall through to "".
-type BlockWithRichText = { rich_text: RichTextItemResponse[] };
+export type BlockWithRichText = { rich_text: RichTextItemResponse[] };
 
-function hasRichText(value: unknown): value is BlockWithRichText {
+export function hasRichText(value: unknown): value is BlockWithRichText {
 	return (
 		typeof value === "object" &&
 		value !== null &&
@@ -58,7 +58,7 @@ function hasRichText(value: unknown): value is BlockWithRichText {
 	);
 }
 
-function extractBlockText(block: PartialBlockObjectResponse | BlockObjectResponse): string {
+export function extractBlockText(block: PartialBlockObjectResponse | BlockObjectResponse): string {
 	if (!("type" in block)) {
 		// PartialBlockObjectResponse: only { object, id } — no type-specific payload exists.
 		return "";

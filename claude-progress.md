@@ -7,26 +7,237 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `dash-003` (conflicts-over-time bar
-  chart). `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`,
+- Current highest-priority unfinished feature: `conflict-007` (change-based
+  conflict detection using Notion edit metadata, priority 16 — drafted in
+  Session 015 from the maintainer's question about unchanged blocks appearing
+  as conflicts; see its notes for the design decisions awaiting confirmation).
+  `conflict-006` (resolving a conflict writes the kept version back to
+  Notion) was implemented and verified in Session 015, reviewed and approved by
+  the maintainer the same session, and is `passing` — committed and pushed
+  along with the Session 013/014 artifact updates. `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`,
   `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, `sync-004`,
-  `conflict-003`, `conflict-004`, `conflict-005`, and `dash-002` are `passing`.
-  `conflict-003`, `conflict-004`, and `conflict-005` are committed (`4ccfbe4`,
-  `b282b3b`, `adb9ef3` — confirmed via `git log`; the stale note below claiming
-  `conflict-005` was still awaiting review has been superseded, it was reviewed and
-  committed since). `dash-002` is implemented and verified this session (Session
-  013), not yet committed — awaiting maintainer review.
-- Current blocker: none. Still-open, non-blocking item carried from `conflict-005`
-  (Session 012): the DB has **96 real `Conflict` rows** left over from that
-  session's verification (91 unresolved, 5 resolved as of Session 013 — 2 more were
-  resolved via real live Dashboard use between sessions), a presence-based
-  false-positive flood from running `detect-conflicts` against months of
-  accumulated real sync history (see Session 012 for the full account). Still
-  undecided whether to leave, resolve via the dashboard, or delete (regenerable via
-  `npm run detect-conflicts`). Session 013 (`dash-002`) deliberately left these rows
-  untouched and used them as real verification data (see below).
+  `conflict-003`, `conflict-004`, `conflict-005`, and `dash-002` are `passing`,
+  all committed and pushed (`4ccfbe4`, `b282b3b`, `adb9ef3`, `f887d1b` — confirmed
+  via `git log`). `conflict-006` was the first feature to write to a user's real
+  Notion workspace — the dashboard's Keep buttons now perform a real
+  `blocks.update` on every click (see Session 015 and the feature's notes).
+- `dash-003` (conflicts-over-time bar chart) was implemented, verified, and then
+  **fully reverted and removed from `feature_list.json`** in Session 014, per an
+  explicit maintainer decision that this dashboard should not have a chart UI. Do
+  not re-add it without the maintainer asking again — see Session 014 for what was
+  built and undone. `recharts` is **not** a dependency of this repo (installed and
+  then `npm uninstall`ed the same session; `package.json`/`package-lock.json` are
+  back to their pre-`dash-003` committed state).
+- `dash-004` (page health / team activity views) was **removed from
+  `feature_list.json`** in Session 014 at the maintainer's request, alongside
+  `dash-003`. It was never implemented (`not_started`, no evidence, no code) —
+  this was a pure spec removal, nothing to revert in the codebase. Do not re-add
+  without the maintainer asking again.
+- Current blocker: none. The long-open `conflict-005` leftover item is CLOSED:
+  the 90 stale unresolved presence-based false-positive `Conflict` rows were
+  deleted in Session 015 with explicit maintainer approval (the 6 resolved rows,
+  which record real maintainer dashboard use, were kept — DB now has exactly 6
+  Conflict rows). Do NOT run `npm run detect-conflicts` until `conflict-007`
+  (change-based detection) lands — the current presence-based logic would
+  recreate the flood, and since `conflict-006` the dashboard's Keep buttons
+  perform real Notion writes on every unresolved row shown.
 
 ## Session Log
+
+### Session 015
+
+- Date: 2026-07-03
+- Goal: Implement `conflict-006` — resolving a conflict writes the kept version
+  back to the real Notion block.
+- Planning: used plan mode (plan file
+  `/home/ajith/.claude/plans/create-plan-for-conflict-006-stateless-pnueli.md`).
+  Read `conflicts.ts`/`sync.ts`/`conflict.ts`/`schema.prisma`/
+  `ResolveConflictButtons.tsx`/`server.js` and the `@notionhq/client@5.22.0`
+  type declarations (confirmed `blocks.update` needs the body keyed by the
+  block's own live `type`, which Concord stores nowhere). Two product decisions
+  were **actually answered** by the maintainer via `AskUserQuestion` (a first —
+  prior sessions' questions all timed out): (1) fail closed — a failed Notion
+  write must leave the conflict `unresolved` (error returned, retryable);
+  (2) token source — kept user's `accessToken` first, other participant's as
+  fallback. A third constraint fixed in planning: `keep` absent ⇒ byte-identical
+  `conflict-004` legacy behavior, no Notion call.
+- Step 0 (before any route code): Notion **write-capability check** — a
+  throwaway script appended two disposable scratch blocks (paragraph + divider)
+  to a real connected page and ran a real `blocks.update` with the stored token.
+  Succeeded, so the integration's update-content capability was proven before
+  implementation, not assumed.
+- Implementation (4 files): `server/lib/sync.ts` — exported `hasRichText` /
+  `BlockWithRichText` / `extractBlockText` (export-only, no behavior change);
+  new `server/lib/notionWriteback.ts` — `writeBlockContent()` does
+  retrieve-then-update (live type lookup), `UnsupportedBlockTypeError` for
+  non-text block types, single plain-text run, token never logged;
+  `server/api/conflicts.ts` — `PATCH /:id/resolve` gains optional
+  `keep: 'user1'|'user2'` (invalid ⇒ 400; null kept-content ⇒ 422; no token on
+  either participant ⇒ 422; unsupported block type ⇒ 422; other Notion failure
+  ⇒ 502 with the row untouched; DB update runs **only after** a successful
+  Notion write); `ResolveConflictButtons.tsx` — one line, body now includes
+  `keep: side`. New status codes 422/502 are a first for this repo — flagged in
+  `feature_list.json` notes as a judgment call.
+- Verification (full detail in `feature_list.json` evidence): seeded 6 Conflict
+  rows (A–F) + 2 synthetic token-less Users; bounced Express (tsx, no watch
+  mode). Negative paths all correct and all DB-confirmed to leave rows
+  unresolved: bad `keep` 400, no-token 422, divider 422 (divider's
+  `last_edited_time` confirmed untouched), garbage blockId + `keep` 502,
+  null-content 422. Legacy path **proven** not to call Notion: a garbage
+  blockId that 502s with `keep` returned 200 without it. Success path: PATCH
+  `keep:'user1'` → 200; `blocks.retrieve` directly from the Notion API
+  confirmed the real block now contains exactly the kept side's content;
+  DB row resolved per conflict-004's own checks; row absent from
+  `GET /conflicts`. `tsc --noEmit` clean; server log grep for token markers →
+  0 matches.
+- Cleanup: deleted the 6 seeded rows + 2 synthetic users (DB confirmed back to
+  the exact 96-conflict/2-user baseline), trashed both scratch Notion blocks,
+  deleted all 6 throwaway scripts. Baseline verified against the live servers
+  (`/auth/` 302, `/` 200, `/Dashboard` 200). NOTE: a full `./init.sh` cycle
+  couldn't run — the maintainer's own Next dev server holds port 3000 (found
+  running at session start, left alone; dash-002 precedent). The maintainer's
+  Express terminal process had to be bounced once to load the new route and was
+  replaced with a detached instance left running so the app stays usable —
+  re-run `./init.sh` after freeing both ports for the standard clean cycle.
+- New weight on an old open item: the dashboard's Keep buttons now perform a
+  real Notion write on every click. The 90 unresolved leftover rows from
+  `conflict-005` mostly point at real blocks — clicking Keep on them now
+  genuinely rewrites real workspace content (plain-text fidelity). Decide their
+  cleanup with that in mind.
+- Status: `conflict-006` marked `passing` with full evidence. **Uncommitted,
+  awaiting maintainer review** per AGENTS.md (alongside the still-uncommitted
+  Session 013/014 artifact updates).
+- Post-verification, the maintainer asked why blocks they never edited were
+  showing as conflicts. Answer: conflict-001's documented presence-based MVP
+  detection (Snapshot.userId = who synced, not who edited; any block synced by
+  2+ distinct connections is flagged, content never compared). The maintainer
+  wants change-based detection: a conflict only when someone actually changed
+  the content, displayed as captured previous-vs-new. Drafted as a new
+  `conflict-007` entry (priority 16, `not_started`) in `feature_list.json` with
+  the full design (capture last_edited_time/last_edited_by on Snapshot during
+  sync; detect on content change between consecutive snapshots; map editor via
+  User.notionId). An AskUserQuestion confirming the design details, the fate of
+  the 90 false-positive rows (delete recommended — regenerable, and their Keep
+  buttons now do real Notion writes), and whether to commit conflict-006 first
+  got no response in 60s — so per the commit-gate rule NOTHING was committed,
+  NO rows were deleted, and NO conflict-007 code was started at that point.
+- **Maintainer responded later the same session, approving all three**: 'yes
+  commit and push conflict-006, yes conflict-007 design is good and yes delete
+  the 90 stale rows.' Actions taken on approval: (1) deleted exactly the 90
+  stale unresolved presence-based Conflict rows via a throwaway script
+  (before: 90 unresolved / 6 resolved; after: 6 resolved only — the 6 resolved
+  rows record real maintainer dashboard use and were kept; script deleted after
+  use) — closes the cleanup item open since `conflict-005`; (2) updated
+  `FEATURES.md` (stale since Session 013): dash-002 ✅, conflict-006 ✅, added
+  the conflict-007 ⬜ line, corrected the header count to 23 features / 15
+  passing / 8 not started; (3) both dev servers had been stopped by the
+  maintainer by this point, so the **full `./init.sh` cycle finally ran —
+  PASSED** (Postgres reachable, `/auth/` → 302, `/` → 200, clean teardown,
+  ports confirmed free), closing the only remaining evidence gap; (4) committed
+  and pushed. WARNING recorded in conflict-007's notes: do not run
+  `npm run detect-conflicts` before conflict-007 lands — the presence-based
+  logic would recreate the false-positive flood, and Keep buttons now perform
+  real Notion writes. Next best step: implement `conflict-007` (design
+  approved).
+
+### Session 014
+
+- Date: 2026-07-03
+- Goal: Implement `dash-003` — a Recharts bar chart of conflicts bucketed by day.
+- Planning: used plan mode. One Explore agent re-read the post-`dash-002`
+  `app/Dashboard/page.tsx` and `StatCards.tsx`, confirmed `recharts` was not yet
+  installed anywhere (package.json/lockfile/node_modules), confirmed no chart code
+  existed, and confirmed `Conflict.createdAt` needed no schema change. Live
+  read-only `psql` checks (before any writes) found all 96 real `Conflict` rows
+  share one `createdAt` day (2026-07-03, from `conflict-005`'s batch detection
+  run) — unlike `dash-002`, real data does not satisfy this feature's own
+  "across several days" verification precondition, so synthetic seeding would be
+  required. `npm view recharts version peerDependencies` confirmed `3.9.1`
+  supports this repo's pinned React 19.2.3 with no `--legacy-peer-deps` needed. A
+  Plan agent then designed the query/bucketing strategy, component boundary, and
+  verification approach (headless-browser check required, since Recharts'
+  `ResponsiveContainer` only renders real bars after client hydration — plain
+  `curl` can't verify them, unlike dash-001/002).
+- Implementation: `npm install recharts` (clean, no peer conflicts). Added a 5th
+  query to the existing `Promise.all` in `app/Dashboard/page.tsx`
+  (`prisma.conflict.findMany({ select: { createdAt: true } })`), bucketed by UTC
+  day in plain JS (no `$queryRaw` — no precedent for raw SQL anywhere in this
+  repo). Added `app/components/conflicts-chart/ConflictsChart.tsx` (`"use client"`,
+  single neutral zinc-700 bar series, no legend, built-in tooltip, gridlines/axis
+  styled per the dataviz skill's guidance, which was loaded and read this
+  session). Mounted a new "Conflicts Over Time" section right after `<StatCards
+  />`.
+- Bug found and fixed mid-implementation (not anticipated in the plan): rendering
+  `ConflictsChart` directly from the Server Component page produced a real React
+  hydration-mismatch console error — Recharts' `ResponsiveContainer` can't measure
+  real dimensions during SSR (no `window`), so server and client output diverged.
+  Fixed with the standard Next.js App Router pattern: added
+  `app/components/conflicts-chart/ConflictsChartLoader.tsx` (`"use client"`,
+  wraps `next/dynamic(() => import('./ConflictsChart'), { ssr: false })`) — since
+  `dynamic(..., { ssr: false })` cannot be called directly inside a Server
+  Component, `page.tsx` now imports the loader, not the chart directly. Re-tested
+  after the fix: 0 console errors (down from 1), chart output unchanged.
+  Also fixed one real `tsc` error along the way: Recharts 3.x's `Tooltip`
+  `formatter` type takes `value: ValueType | undefined`, not a plain `number` —
+  removed an incorrect explicit type annotation.
+- Verification: since real data didn't cover the "several days" requirement,
+  seeded 180 synthetic `Conflict` rows across 5 backdated days (2026-06-28 through
+  07-02) via a throwaway `server/scripts/_seedDash003.ts` (deleted after use),
+  reusing real `pageId`/`userId` values and `status: "resolved"` (kept out of the
+  real unresolved list) with distinct counts per day (15/25/35/45/60) for visual
+  legibility — same throwaway-seed-script precedent as `conflict-003`/`004`.
+  Mid-session, ad-hoc `psql`/raw-TCP connections to the DB host started timing out
+  (a transient network-path issue in this environment — the live app's and seed
+  script's own persistent `pg.Pool` connections kept working throughout; only
+  fresh `psql`-process connections were affected), so ground truth was instead
+  re-queried via a throwaway Prisma/`tsx` script
+  (`server/scripts/_checkDash003.ts`) — confirmed 6 day-buckets (5 seeded + the
+  real 07-03 bucket at 96), 276 total rows. Browser-driven check with
+  `puppeteer-core@25` (scratchpad-only install, never `package.json`, same
+  pattern as `sync-004`/`conflict-005`) against a freshly self-started boot:
+  exactly 6 `.recharts-bar-rectangle` elements, rendered heights linearly
+  proportional to the ground-truth counts (~2.42px/unit consistently across all 6
+  bars), X-axis labels exactly "Jun 28"…"Jul 3", 0 console errors after the
+  hydration fix. Screenshot taken and visually reviewed (dataviz skill step 7) —
+  clean layout, no collisions. Cleaned up: deleted all 180 seeded rows (confirmed
+  DB back to exactly 96, single day bucket), deleted all three throwaway scripts,
+  killed both self-started dev servers by PID (ports 3000/3001 confirmed free),
+  deleted the scratchpad puppeteer install. Ran the full `./init.sh` baseline
+  smoke check from a clean state as the final step (this being the first feature
+  to add a new root dependency, "restartable from scratch" specifically needed
+  re-proving) — PASSED (Postgres reachable, `/auth/` → 302, `/` → 200, clean
+  teardown).
+- `dash-003` was marked `passing` in `feature_list.json` with full evidence
+  (summarized above) and left uncommitted for maintainer review, per the usual
+  flow.
+- **Reversed later in this same session**: the maintainer reviewed and explicitly
+  rejected the feature — no chart UI wanted on this dashboard at all, not a
+  placement/style tweak. Fully reverted before anything was committed: `git
+  checkout -- app/Dashboard/page.tsx` (back to the committed `dash-002` state),
+  deleted `app/components/conflicts-chart/` (`ConflictsChart.tsx` +
+  `ConflictsChartLoader.tsx`), `npm uninstall recharts` (confirmed
+  `package.json`/`package-lock.json` byte-identical to the last commit
+  afterward — package count back to 545, matching pre-`recharts`). The
+  `dash-003` entry itself was deleted from `feature_list.json` (not just reset to
+  `not_started`) since the maintainer's ask was explicitly to remove the task, not
+  defer it — confirmed no other feature depends on `dash-003`. The 96 real
+  `Conflict` rows used as verification data throughout were never touched by any
+  of this and remain exactly as they were.
+- Outcome: repo is back to the exact `dash-002` (`f887d1b`) state, plus this log
+  and the `feature_list.json` removal. Nothing to commit re: `dash-003` (it never
+  landed).
+- Later in this same session, the maintainer also asked to remove `dash-004`
+  (page health / team activity views) from `feature_list.json`. It was
+  `not_started` with no evidence and no code written, so this was a pure spec
+  removal — no revert needed, just deleted the entry (confirmed nothing else
+  depends on it).
+- Then the maintainer asked to move `conflict-006` (resolving a conflict writes
+  the kept version back to Notion) to be the next task, above `team-001`.
+  Re-prioritized from 24 to 15 (the open slot directly after `dash-002`, left by
+  the `dash-003` removal) and moved its position in the `features` array to match,
+  ahead of `team-001` (still 17) — confirmed no other feature depends on
+  `conflict-006`. Next best step: `conflict-006`, now the highest-priority
+  unfinished feature.
 
 ### Session 013
 

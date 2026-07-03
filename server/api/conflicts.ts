@@ -1,6 +1,7 @@
 import express from "express";
 import type { Request, Response } from "express";
 import prisma from "../PrismaClient.js";
+import { writeBlockContent, UnsupportedBlockTypeError } from "../lib/notionWriteback.js";
 
 const router = express.Router();
 
@@ -34,11 +35,66 @@ router.patch("/:id/resolve", async (req: Request, res: Response) => {
 		return;
 	}
 
+	// `keep` is optional: absent means the original conflict-004 contract (mark
+	// resolved in Concord only, no Notion call). When present it names which
+	// side's content gets written back to the real Notion block, and the DB
+	// update only happens after that write succeeds — "resolved" must never
+	// claim a write-back that didn't happen.
+	const keepRaw = req.body?.keep;
+	if (keepRaw !== undefined && keepRaw !== "user1" && keepRaw !== "user2") {
+		res.status(400).json({ message: "keep must be 'user1' or 'user2'." });
+		return;
+	}
+	const keep = keepRaw as "user1" | "user2" | undefined;
+
 	try {
-		const existing = await prisma.conflict.findUnique({ where: { id } });
+		const existing = await prisma.conflict.findUnique({
+			where: { id },
+			include: { user1: true, user2: true },
+		});
 		if (!existing) {
 			res.status(404).json({ message: "Conflict not found." });
 			return;
+		}
+
+		if (keep !== undefined) {
+			const keptContent = keep === "user1" ? existing.user1Content : existing.user2Content;
+			// null = never captured (pre-migration rows); "" is legitimate empty text
+			// and is allowed through (writing it clears the block).
+			if (keptContent === null) {
+				res.status(422).json({
+					message: "Kept side has no captured content to write back to Notion.",
+				});
+				return;
+			}
+
+			const keptUser = keep === "user1" ? existing.user1 : existing.user2;
+			const otherUser = keep === "user1" ? existing.user2 : existing.user1;
+			const accessToken = keptUser.accessToken ?? otherUser.accessToken;
+			if (!accessToken) {
+				res.status(422).json({
+					message: "No Notion access token available for either conflict participant.",
+				});
+				return;
+			}
+
+			try {
+				await writeBlockContent({ accessToken, blockId: existing.blockId, content: keptContent });
+			} catch (notionError) {
+				console.error(
+					"Notion write-back failed:",
+					notionError instanceof Error ? notionError.message : String(notionError),
+				);
+				if (notionError instanceof UnsupportedBlockTypeError) {
+					res.status(422).json({ message: notionError.message });
+					return;
+				}
+				res.status(502).json({
+					message: "Failed to write the kept content back to Notion. The conflict was not marked resolved.",
+					error: notionError instanceof Error ? notionError.message : String(notionError),
+				});
+				return;
+			}
 		}
 
 		const updated = await prisma.conflict.update({

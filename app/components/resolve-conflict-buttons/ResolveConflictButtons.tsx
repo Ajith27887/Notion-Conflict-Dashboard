@@ -32,7 +32,7 @@ export default function ResolveConflictButtons({
 			const response = await fetch(`${CONFLICTS_ENDPOINT}/${conflictId}/resolve`, {
 				method: "PATCH",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ resolvedBy }),
+				body: JSON.stringify({ resolvedBy, keep: side }),
 			});
 			if (!response.ok) {
 				const body = await response.json().catch(() => null);

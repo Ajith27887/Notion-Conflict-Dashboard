@@ -1,6 +1,6 @@
 # App Features
 
-One line per feature, generated from `feature_list.json` (24 features, 13 passing / 11 not started).
+One line per feature, generated from `feature_list.json` (23 features, 15 passing / 8 not started).
 Legend: ✅ passing · 🚧 in progress · 🔴 blocked · ⬜ not started
 
 ## Auth
@@ -10,9 +10,7 @@ Legend: ✅ passing · 🚧 in progress · 🔴 blocked · ⬜ not started
 
 ## Dashboard
 - ✅ `dash-001` — An authenticated user sees the dashboard shell at /Dashboard instead of a 404.
-- ⬜ `dash-002` — The dashboard header shows summary cards for total conflicts, resolved, unresolved, and the most active page.
-- ⬜ `dash-003` — The dashboard shows a bar chart of conflicts over time.
-- ⬜ `dash-004` — The dashboard shows which pages have the most conflicts and which users cause the most conflicts.
+- ✅ `dash-002` — The dashboard header shows summary cards for total conflicts, resolved, unresolved, and the most active page.
 
 ## Sync
 - ✅ `sync-001` — After connecting, the user's Notion pages and block snapshots are stored for the workspace.
@@ -26,7 +24,8 @@ Legend: ✅ passing · 🚧 in progress · 🔴 blocked · ⬜ not started
 - ✅ `conflict-003` — The app can list all currently unresolved conflicts for a workspace.
 - ✅ `conflict-004` — Resolving a conflict marks it resolved, records who resolved it and when, and removes it from the unresolved list.
 - ✅ `conflict-005` — Each conflict shows User1's version next to User2's version with 'Keep User1' and 'Keep User2' buttons; resolving removes it from the list.
-- ⬜ `conflict-006` — When a user clicks 'Keep User1' or 'Keep User2' on a conflict, the chosen version is written back to the actual Notion block, not just recorded in Concord's own dashboard.
+- ✅ `conflict-006` — When a user clicks 'Keep User1' or 'Keep User2' on a conflict, the chosen version is written back to the actual Notion block, not just recorded in Concord's own dashboard.
+- ⬜ `conflict-007` — A conflict is only recorded when a block's content actually changed between syncs, attributed to the real Notion editor, showing the previous and new versions as captured.
 
 ## Team
 - ⬜ `team-001` — The app can list all users connected to the same workspace as one team.
