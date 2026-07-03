@@ -41,22 +41,25 @@ model Snapshot {
   blockId   String
   pageId    Int
   userId    Int
+  content   String?
   page      Page     @relation(fields: [pageId], references: [id])
   user      User     @relation(fields: [userId], references: [id])
   createdAt DateTime @default(now())
 }
 
 model Conflict {
-  id         Int       @id @default(autoincrement())
-  pageId     Int
-  blockId    String
-  status     String
-  resolvedBy String
-  user1Id    Int
-  user2Id    Int
-  user1      User      @relation("ConflictUser1", fields: [user1Id], references: [id])
-  user2      User      @relation("ConflictUser2", fields: [user2Id], references: [id])
-  page       Page      @relation(fields: [pageId], references: [id])
-  createdAt  DateTime  @default(now())
-  resolvedAt DateTime?
+  id           Int       @id @default(autoincrement())
+  pageId       Int
+  blockId      String
+  status       String
+  resolvedBy   String
+  user1Id      Int
+  user2Id      Int
+  user1Content String?
+  user2Content String?
+  user1        User      @relation("ConflictUser1", fields: [user1Id], references: [id])
+  user2        User      @relation("ConflictUser2", fields: [user2Id], references: [id])
+  page         Page      @relation(fields: [pageId], references: [id])
+  createdAt    DateTime  @default(now())
+  resolvedAt   DateTime?
 }

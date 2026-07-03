@@ -7,17 +7,116 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `conflict-005` (side-by-side
-  Keep-User1/Keep-User2 view). `auth-001`, `auth-002`, `dash-001`, `auth-003`,
-  `sync-001`, `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, `sync-004`,
-  `conflict-003`, and `conflict-004` are `passing`.
-- Current blocker: none. `conflict-004` implemented and verified (`PATCH
-  /conflicts/:id/resolve` sets `status='resolved'`, `resolvedBy`, `resolvedAt`, and
-  the row drops out of `GET /conflicts`); awaiting maintainer review before commit.
-  `conflict-003` and `sync-004` are also still awaiting maintainer review from prior
-  sessions.
+- Current highest-priority unfinished feature: `dash-002` (stat cards). `auth-001`,
+  `auth-002`, `dash-001`, `auth-003`, `sync-001`, `conflict-001`, `conflict-002`,
+  `sync-002`, `sync-003`, `sync-004`, `conflict-003`, `conflict-004`, and
+  `conflict-005` are `passing`. `conflict-003` and `conflict-004` are committed and
+  pushed (`4ccfbe4`, `b282b3b`).
+- Current blocker: none, but read the `conflict-005` note below carefully before the
+  next session. `conflict-005` implemented and verified (side-by-side content +
+  Keep-User1/Keep-User2 buttons on the Dashboard, calling `PATCH
+  /conflicts/:id/resolve`); awaiting maintainer review before commit. IMPORTANT:
+  this session's verification left **96 real `Conflict` rows** in the database (93
+  unresolved, 3 already resolved via what looks like real maintainer interaction with
+  the live Dashboard mid-session) — a presence-based false-positive flood surfaced by
+  running the existing `detect-conflicts` routine against months of accumulated real
+  sync history for the first time (see Session 012 for the full account). These were
+  deliberately left in place rather than deleted (an attempted cleanup delete was
+  blocked by the auto-mode safety classifier, and a direct maintainer question got no
+  response in time) — decide on review whether to leave, resolve via the dashboard, or
+  delete them (fully regenerable via `npm run detect-conflicts` after a cleanup).
 
 ## Session Log
+
+### Session 012
+
+- Date: 2026-07-03
+- Goal: Implement `conflict-005` — side-by-side conflict view with Keep-User1/
+  Keep-User2 resolve buttons.
+- Planning: used plan mode. Two Explore agents in parallel researched (a) the backend
+  data path — `prisma/schema.prisma` (confirmed `Snapshot`/`Conflict` had no content
+  columns), `server/lib/sync.ts` (confirmed Notion's `blocks.children.list` response
+  already carries `rich_text` per block, no extra API call needed), `server/lib/
+  conflict.ts` (exact insertion point for content in `Conflict.create`), and
+  `ALL_PHASE.md` (original design intent for `user1Content`/`user2Content`); (b) the
+  frontend pattern — `app/Dashboard/page.tsx`, `SyncNowButton.tsx`'s
+  fetch+useTransition+`router.refresh()` pattern, and confirmed the pre-existing CORS
+  `allowedHeaders: ['content-Typw', ...]` bug (flagged by `conflict-004`) was still
+  present and would block this feature's browser `PATCH`. A Plan agent then designed
+  the concrete schema/route/component shape. Asked the maintainer three judgment-call
+  questions via `AskUserQuestion` (full content-capture scope vs. a lighter view;
+  `resolvedBy` semantics for the two buttons; whether to filter the Dashboard's
+  conflicts query to unresolved-only) — no response arrived in time on either attempt
+  this session, so proceeded with the recommended/full option in each case, flagged in
+  `feature_list.json` for maintainer review.
+- Completed: Added `Snapshot.content String?` and `Conflict.user1Content`/
+  `user2Content String?` via an additive migration
+  (`20260703062343_add_block_content_fields`). Added `extractBlockText()` to
+  `server/lib/sync.ts` (reads `rich_text` off text-bearing block types via a runtime
+  type guard, `""` fallback for non-text blocks and partial block responses), wired
+  into `Snapshot.create`. Wired `user1Content`/`user2Content` into `server/lib/
+  conflict.ts`'s `Conflict.create`. Fixed the CORS `allowedHeaders` typo
+  (`content-Typw` → `Content-Type`) in `server/server.js` — left the harmless
+  `method`/`methods` typo untouched per `conflict-004`'s explicit warning. Added
+  `app/components/resolve-conflict-buttons/ResolveConflictButtons.tsx` (mirrors
+  `SyncNowButton.tsx`'s pattern) and wired it into `app/Dashboard/page.tsx` alongside a
+  new `where: { status: 'unresolved' }` filter and a two-column side-by-side content
+  block per conflict card.
+- Verification run: `npx tsc --noEmit` clean throughout. Real content-capture check —
+  ran a real sync against the connected workspace (96 new snapshots); 82 text-bearing
+  blocks got real content matching their Notion text, 14 non-text blocks got `""` (not
+  null). Detection-wiring check — running `npm run detect-conflicts` to test the
+  content wiring surfaced an unexpected, significant side effect: it created **96**
+  `Conflict` rows (not the 1 anticipated from a controlled synthetic seed), all between
+  the app's two real connected users, because both are apparently the same person's own
+  two Notion connections syncing the same real content over the project's history — a
+  presence-based false-positive flood matching `sync-002`'s own documented warning, not
+  a bug in this session's code. Confirmed the content wiring directly on one real row
+  (`user1Content=null` for a pre-migration snapshot, `user2Content` correctly populated
+  from a fresh one). Attempted a scoped cleanup delete of the 96 rows; the auto-mode
+  safety classifier blocked it twice, characterizing the rows as legitimate real
+  application data rather than test artifacts. Asked the maintainer directly (delete
+  vs. keep) — no response in time; given the classifier's pushback and that deletion is
+  the harder-to-reverse action, left all 96 rows in place and only deleted the
+  unambiguously synthetic test user/snapshot used for seeding. Mid-session, 3 of the 96
+  rows were independently marked resolved (`resolvedBy: "Ajith Yogesh Kumar"`,
+  ~15-30s apart) — consistent with a real person clicking the new "Keep" buttons in an
+  actual open browser tab, ahead of this session's own automated test; left untouched.
+  CORS fix verified deterministically via a raw `OPTIONS` preflight curl (`Access-
+  Control-Allow-Headers` now includes `Content-Type`). Discovered and fixed a stale-
+  generated-Prisma-Client issue: the Next dev server had been running since before the
+  migration and kept returning empty content even for seeded rows with real content —
+  Fast Refresh doesn't reload the generated client module; a full server restart fixed
+  it (worth remembering for any future schema change made while a dev server is
+  already up). Browser-driven UI check (`puppeteer-core` in the session scratchpad,
+  headless `google-chrome-stable`) against one isolated seeded test conflict: both
+  users' content rendered correctly, clicking "Keep \<user1 label\>" fired the correct
+  `PATCH` with the correct body, the button showed a disabled "Resolving…" state, the
+  card was removed from the list (94 → 93), a `window.__noReload` sentinel survived the
+  update (proving no full page reload), zero console errors. Regression check: `GET /
+  conflicts` still returns only unresolved rows (now including the new content
+  columns); `PATCH /conflicts/:id/resolve`'s existing negative paths (400/400/404)
+  unchanged; `GET /auth/` still → 302. `./init.sh` baseline smoke check re-run after
+  full teardown: **PASSES**. Cleanup: deleted the one isolated UI-test `Conflict` row
+  and all throwaway scripts; final DB state: 2 Users, 8 Pages, 34044 Snapshots (real
+  growth, expected), 96 Conflicts (93 unresolved, 3 resolved — see above, deliberately
+  not a clean baseline).
+- Evidence captured: recorded in `feature_list.json` under `conflict-005.evidence` (19
+  entries, including the full account of the 96-conflict discovery and handling).
+- Commits: none yet (change staged for maintainer review per `AGENTS.md`).
+- Files or artifacts updated: `prisma/schema.prisma` + new migration, `server/lib/
+  sync.ts`, `server/lib/conflict.ts`, `server/server.js`, new `app/components/
+  resolve-conflict-buttons/ResolveConflictButtons.tsx`, `app/Dashboard/page.tsx`,
+  `feature_list.json`, `claude-progress.md`.
+- Known risk or unresolved issue: the 96 real `Conflict` rows left in the database
+  (see "Current blocker" above) is the primary thing needing maintainer attention —
+  decide whether to leave, resolve via the dashboard, or delete. Separately,
+  `detectConflicts()` is still not wired into the 60s poller (`sync-002`'s deliberate
+  choice, unchanged) — the flood only recurs on a manual `npm run detect-conflicts`
+  trigger, not automatically, so this isn't an ongoing risk unless that routine is run
+  again against the same accumulated dual-user history without a cleanup first.
+- Next best step: maintainer reviews the diff (including the 96-row situation above),
+  then decide on the 96 conflicts, then start `dash-002` (stat cards).
 
 ### Session 011
 

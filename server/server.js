@@ -11,7 +11,7 @@ const PORT = 3001;
 const corsOptions = {
 	origin: "http://localhost:3000",
 	method: "GET, POST",
-	allowedHeaders: ['content-Typw', "Authorization"]
+	allowedHeaders: ['Content-Type', "Authorization"]
 }
 
 app.use(cors(corsOptions))

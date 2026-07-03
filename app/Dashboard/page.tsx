@@ -1,5 +1,6 @@
 import prisma from "../lib/prisma";
 import SyncNowButton from "../components/sync-now-button/SyncNowButton";
+import ResolveConflictButtons from "../components/resolve-conflict-buttons/ResolveConflictButtons";
 
 const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -10,6 +11,7 @@ const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
 export default async function Dashboard() {
   const [conflicts, pages] = await Promise.all([
     prisma.conflict.findMany({
+      where: { status: "unresolved" },
       orderBy: { createdAt: "desc" },
       include: { page: true, user1: true, user2: true },
     }),
@@ -64,6 +66,35 @@ export default async function Dashboard() {
                     {conflict.resolvedBy || "—"}
                   </span>
                 </p>
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                      {conflict.user1?.name ?? conflict.user1?.email}
+                    </p>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-700">
+                      {conflict.user1Content || "No content captured."}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                      {conflict.user2?.name ?? conflict.user2?.email}
+                    </p>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-700">
+                      {conflict.user2Content || "No content captured."}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <ResolveConflictButtons
+                    conflictId={conflict.id}
+                    user1Label={
+                      conflict.user1?.name ?? conflict.user1?.email ?? "User 1"
+                    }
+                    user2Label={
+                      conflict.user2?.name ?? conflict.user2?.email ?? "User 2"
+                    }
+                  />
+                </div>
               </li>
             ))}
           </ul>

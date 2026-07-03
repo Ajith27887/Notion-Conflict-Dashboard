@@ -64,6 +64,8 @@ export async function detectConflicts(): Promise<ConflictSummary> {
 				user2Id: user2.userId,
 				status: "unresolved",
 				resolvedBy: "",
+				user1Content: user1.content,
+				user2Content: user2.content,
 			},
 		});
 		conflictsCreated += 1;
