@@ -1,6 +1,6 @@
 {
   "project": "concord-notion-conflict-dashboard",
-  "last_updated": "2026-07-02",
+  "last_updated": "2026-07-03",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -334,14 +334,23 @@
       "area": "dashboard",
       "title": "Stat cards: total / resolved / unresolved / most active page",
       "user_visible_behavior": "The dashboard header shows summary cards for total conflicts, resolved, unresolved, and the most active page.",
-      "status": "not_started",
+      "status": "passing",
       "verification": [
         "Seed a mix of resolved and unresolved Conflict rows across at least two pages.",
         "Open http://localhost:3000/Dashboard.",
         "Verify the four stat cards show correct counts and the page with the most conflicts as 'Most Active Page'."
       ],
-      "evidence": [],
-      "notes": "Depends on conflict-001. Counts derive from the Conflict table grouped by status and pageId."
+      "evidence": [
+        "Added app/components/stat-cards/StatCards.tsx: a plain server component (no 'use client', pure display) rendering a 4-column responsive grid (grid-cols-1 sm:grid-cols-2 lg:grid-cols-4). Reuses existing Tailwind idioms verbatim: card shell rounded-2xl border border-zinc-200 bg-white p-6, label text-xs font-semibold uppercase tracking-wide text-zinc-400, value mt-2 text-3xl font-bold. Resolved value colored text-green-700 and Unresolved text-amber-700 to match the existing badge palette (bg-green-100 text-green-800 / bg-amber-100 text-amber-800) instead of introducing a new accent color. The 4th card (Most Active Page) shows the page title plus an 'N conflicts' subtext, falling back to '—' / '0 conflicts' when there are zero Conflict rows.",
+        "app/Dashboard/page.tsx: extended the existing Promise.all from 2 to 4 queries (existing conflicts/pages queries untouched). Added prisma.conflict.groupBy({ by: ['status'], _count: { _all: true } }) for total/resolved/unresolved (total is the sum of all status groups, not resolved+unresolved, so a future third status value can't silently undercount) and prisma.conflict.groupBy({ by: ['pageId'], _count: { _all: true }, orderBy: [{ _count: { pageId: 'desc' } }, { pageId: 'asc' }], take: 1 }) for the most-active page, with a deterministic pageId-ascending tie-break. The winning page's title is resolved via pages.find() against the already-fetched pages array (no extra query). <StatCards> is mounted as the first child of <main>, below the existing <header>, above the conflict list.",
+        "npx tsc --noEmit: clean.",
+        "Verified 2026-07-03 against live, already-running dev servers (found already listening on 3000/3001 at session start, consistent with real maintainer usage of the dashboard noted in the conflict-005 session — left running/untouched rather than bounced, since these were not started by this session and bouncing them would have disrupted a live session; Next's Fast Refresh picked up the new component and the page.tsx query changes automatically, confirmed by the rendered output below).",
+        "Re-queried fresh ground truth immediately before asserting (psql, read-only): Conflict rows grouped by status = 91 unresolved, 5 resolved (96 total); grouped by pageId = page 135 ('Notion-conflict-Dashboradasds') has 91, page 659 ('Teamspace Home') has 5. These are the same real rows deliberately left in the DB by the conflict-005 session (not seeded here) — already satisfy this feature's own 'mix of resolved/unresolved across at least two pages' precondition, so no synthetic seeding was needed, per the sync-003 precedent of preferring real data when it already covers the verification requirement. These rows were not modified or deleted.",
+        "curl -s http://localhost:3000/Dashboard -> HTTP 200. Response body confirmed via targeted extraction (raw HTML, not just a substring grep, since the RSC hydration payload duplicates content): 'Total Conflicts' card shows 96; 'Resolved' card shows 5 (text-green-700); 'Unresolved' card shows 91 (text-amber-700); 'Most Active Page' card shows 'Notion-conflict-Dashboradasds' with '91 conflicts' beneath it. Arithmetic sanity check: 96 === 5 + 91. All four numbers match the freshly-queried DB ground truth exactly.",
+        "UPDATE: the maintainer freed ports 3000/3001 mid-review, so the full ./init.sh baseline smoke check was then actually run (superseding the spot-check-only note originally recorded here): ./init.sh -> 'Postgres reachable', /auth/ -> 302 PASS, / -> 200 PASS, 'Baseline smoke check PASSED', clean teardown (ports confirmed free afterward).",
+        "Additionally re-verified the feature itself on a genuinely fresh, self-started boot (not the earlier borrowed live instance): started Express (3001) and Next dev (3000) via the same setsid pattern init.sh uses, re-queried fresh Conflict ground truth via psql immediately before asserting (unchanged: 91 unresolved / 5 resolved / 96 total, page 135 still most active with 91), then curled http://localhost:3000/Dashboard -> 200 and confirmed all four stat cards render the exact fresh values (Total 96, Resolved 5, Unresolved 91, Most Active Page 'Notion-conflict-Dashboradasds' / '91 conflicts'). Both processes were then killed by PID and ports 3000/3001 confirmed free, with no stray next-server/tsx processes left running."
+      ],
+      "notes": "Passing. Depends on conflict-001 (passing). Counts derive from Conflict.status/Conflict.pageId via two prisma.conflict.groupBy queries; no schema change, no new dependency, no synthetic seed data (real leftover Conflict rows from conflict-005 already covered the verification precondition and were left untouched). Judgment call, not confirmed by the maintainer (AskUserQuestion during planning timed out after 60s): stat cards are placed at the top of <main> (below the slim <header> title/subtitle band), not literally inside the <header> element itself, since a 4-card data grid reads more naturally as page content than as part of the title band — visually the two placements look almost identical. Flagged here for review; trivial to move into <header> later if preferred. Verification ran against the maintainer's already-running dev servers (found already listening on 3000/3001, not started or torn down by this session) rather than a fresh ./init.sh boot/teardown cycle, to avoid disrupting a live session — Fast Refresh correctly picked up both the new component and the page.tsx query changes. The pre-existing static-prerender risk on this page (no dynamic-rendering marker, flagged by dash-001/conflict-002's lineage, deferred to deploy-002) is inherited unchanged and was not addressed here, per that note's own guidance not to fix it speculatively."
     },
     {
       "id": "dash-003",

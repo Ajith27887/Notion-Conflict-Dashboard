@@ -7,26 +7,92 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `dash-002` (stat cards). `auth-001`,
-  `auth-002`, `dash-001`, `auth-003`, `sync-001`, `conflict-001`, `conflict-002`,
-  `sync-002`, `sync-003`, `sync-004`, `conflict-003`, `conflict-004`, and
-  `conflict-005` are `passing`. `conflict-003` and `conflict-004` are committed and
-  pushed (`4ccfbe4`, `b282b3b`).
-- Current blocker: none, but read the `conflict-005` note below carefully before the
-  next session. `conflict-005` implemented and verified (side-by-side content +
-  Keep-User1/Keep-User2 buttons on the Dashboard, calling `PATCH
-  /conflicts/:id/resolve`); awaiting maintainer review before commit. IMPORTANT:
-  this session's verification left **96 real `Conflict` rows** in the database (93
-  unresolved, 3 already resolved via what looks like real maintainer interaction with
-  the live Dashboard mid-session) — a presence-based false-positive flood surfaced by
-  running the existing `detect-conflicts` routine against months of accumulated real
-  sync history for the first time (see Session 012 for the full account). These were
-  deliberately left in place rather than deleted (an attempted cleanup delete was
-  blocked by the auto-mode safety classifier, and a direct maintainer question got no
-  response in time) — decide on review whether to leave, resolve via the dashboard, or
-  delete them (fully regenerable via `npm run detect-conflicts` after a cleanup).
+- Current highest-priority unfinished feature: `dash-003` (conflicts-over-time bar
+  chart). `auth-001`, `auth-002`, `dash-001`, `auth-003`, `sync-001`,
+  `conflict-001`, `conflict-002`, `sync-002`, `sync-003`, `sync-004`,
+  `conflict-003`, `conflict-004`, `conflict-005`, and `dash-002` are `passing`.
+  `conflict-003`, `conflict-004`, and `conflict-005` are committed (`4ccfbe4`,
+  `b282b3b`, `adb9ef3` — confirmed via `git log`; the stale note below claiming
+  `conflict-005` was still awaiting review has been superseded, it was reviewed and
+  committed since). `dash-002` is implemented and verified this session (Session
+  013), not yet committed — awaiting maintainer review.
+- Current blocker: none. Still-open, non-blocking item carried from `conflict-005`
+  (Session 012): the DB has **96 real `Conflict` rows** left over from that
+  session's verification (91 unresolved, 5 resolved as of Session 013 — 2 more were
+  resolved via real live Dashboard use between sessions), a presence-based
+  false-positive flood from running `detect-conflicts` against months of
+  accumulated real sync history (see Session 012 for the full account). Still
+  undecided whether to leave, resolve via the dashboard, or delete (regenerable via
+  `npm run detect-conflicts`). Session 013 (`dash-002`) deliberately left these rows
+  untouched and used them as real verification data (see below).
 
 ## Session Log
+
+### Session 013
+
+- Date: 2026-07-03
+- Goal: Implement `dash-002` — stat cards for total / resolved / unresolved
+  conflicts and the most-active page.
+- Planning: used plan mode. One Explore agent read `app/Dashboard/page.tsx` in
+  full, the existing `SyncNowButton`/`ResolveConflictButtons` components (to
+  confirm the `app/components/<kebab-case>/<PascalCase>.tsx` convention and that
+  neither needed `"use client"` purely for state — only for interactivity),
+  `prisma/schema.prisma`, `app/globals.css`/Tailwind config, and
+  `claude-progress.md`/`feature_list.json`. Live read-only `psql` queries against
+  `DATABASE_URL` (no writes) confirmed the DB already had real, non-synthetic data
+  satisfying the feature's own verification precondition — 91 unresolved + 5
+  resolved `Conflict` rows across 2 pages (page 135 with 91, page 659 with 5) —
+  left over from `conflict-005`'s session. A Plan agent then designed the exact
+  Prisma query shape and component structure; plan wrote up in
+  `/home/ajith/.claude/plans/create-plan-for-dash-002-hashed-rose.md`. Asked the
+  maintainer via `AskUserQuestion` whether the stat cards belong literally inside
+  `<header>` or at the top of `<main>` below it — no response within 60s, proceeded
+  with the recommended (top-of-`<main>`) option per this repo's established
+  no-response-defaults-to-recommended pattern, flagged in both the plan and the
+  `feature_list.json` evidence for maintainer review.
+- Implementation: added `app/components/stat-cards/StatCards.tsx` — a plain server
+  component (no `"use client"`, no interactivity) rendering a 4-card responsive
+  grid, reusing the existing card-shell/label/badge-color Tailwind idioms verbatim
+  rather than inventing new ones. Extended `app/Dashboard/page.tsx`'s existing
+  `Promise.all` from 2 to 4 Prisma queries (two new `groupBy` calls, on `status`
+  and on `pageId`); the existing `conflicts` (unresolved-only) and `pages` queries
+  were left untouched. The most-active page's title is resolved by reusing the
+  already-fetched `pages` array (`.find()`) rather than an extra query.
+- Verification: `npx tsc --noEmit` clean. Found dev servers already running on
+  3000/3001 at session start (not started by this session) — left them running and
+  untouched rather than bouncing them, since Next's Fast Refresh picked up both the
+  new component and the `page.tsx` changes automatically (confirmed by curling and
+  seeing the new markup appear) and bouncing would have risked disrupting a live
+  maintainer session. Re-queried fresh `Conflict` counts via `psql` immediately
+  before asserting (still 91 unresolved / 5 resolved / 96 total, page 135 still
+  most active — unchanged from the planning snapshot). `curl
+  http://localhost:3000/Dashboard` → 200; parsed the response and confirmed all
+  four cards render the exact freshly-queried values (Total 96, Resolved 5,
+  Unresolved 91, Most Active Page "Notion-conflict-Dashboradasds" / "91
+  conflicts"), and that `96 === 5 + 91`. Initially the full `./init.sh` baseline
+  smoke check could not be run because ports 3000/3001 were held by the
+  maintainer's live session; only the two endpoints it asserts were spot-checked
+  against that instance. The maintainer then freed the ports mid-review, so
+  `./init.sh` was run for real: `Postgres reachable`, `/auth/` → 302 PASS, `/` →
+  200 PASS, `Baseline smoke check PASSED`, clean teardown confirmed (no stray
+  listeners on 3000/3001 afterward). Additionally re-verified the feature itself on
+  a genuinely fresh, self-started boot (Express 3001 + Next dev 3000 via the same
+  `setsid` pattern `init.sh` uses) rather than relying on the earlier borrowed live
+  instance: re-queried fresh `Conflict` ground truth immediately before asserting
+  (unchanged — 91 unresolved / 5 resolved / 96 total, page 135 still most active),
+  curled `/Dashboard` → 200, confirmed all four cards render the exact fresh
+  values. Both processes killed by PID afterward and ports confirmed free, no
+  stray `next-server`/`tsx` processes left running. No synthetic data seeded or
+  cleaned up (real leftover rows from `conflict-005` were sufficient and were not
+  modified).
+- Outcome: `dash-002` marked `passing` in `feature_list.json` with full evidence,
+  now including a real executed `./init.sh` pass (not just a spot-check). Not
+  committed — per `AGENTS.md`, stopping here for maintainer review (see the
+  `<header>`-vs-top-of-`<main>` placement judgment call above, flagged for
+  confirmation). Next best step: maintainer reviews the diff, then decide (still
+  outstanding from `conflict-005`) what to do with the 96 real `Conflict` rows,
+  then start `dash-003` (conflicts-over-time bar chart, needs the `recharts`
+  dependency).
 
 ### Session 012
 

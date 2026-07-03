@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma";
 import SyncNowButton from "../components/sync-now-button/SyncNowButton";
 import ResolveConflictButtons from "../components/resolve-conflict-buttons/ResolveConflictButtons";
+import StatCards from "../components/stat-cards/StatCards";
 
 const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -9,7 +10,7 @@ const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 export default async function Dashboard() {
-  const [conflicts, pages] = await Promise.all([
+  const [conflicts, pages, statusCounts, topPageGroup] = await Promise.all([
     prisma.conflict.findMany({
       where: { status: "unresolved" },
       orderBy: { createdAt: "desc" },
@@ -19,7 +20,27 @@ export default async function Dashboard() {
       orderBy: { createdAt: "desc" },
       include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } },
     }),
+    prisma.conflict.groupBy({ by: ["status"], _count: { _all: true } }),
+    prisma.conflict.groupBy({
+      by: ["pageId"],
+      _count: { _all: true },
+      orderBy: [{ _count: { pageId: "desc" } }, { pageId: "asc" }],
+      take: 1,
+    }),
   ]);
+
+  const total = statusCounts.reduce((sum, group) => sum + group._count._all, 0);
+  const resolved =
+    statusCounts.find((group) => group.status === "resolved")?._count._all ?? 0;
+  const unresolved =
+    statusCounts.find((group) => group.status === "unresolved")?._count._all ?? 0;
+  const topPage = topPageGroup[0];
+  const mostActivePage = topPage
+    ? {
+        tittle: pages.find((page) => page.id === topPage.pageId)?.tittle ?? "—",
+        count: topPage._count._all,
+      }
+    : null;
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans">
@@ -30,6 +51,12 @@ export default async function Dashboard() {
         </p>
       </header>
       <main className="px-8 py-10">
+        <StatCards
+          total={total}
+          resolved={resolved}
+          unresolved={unresolved}
+          mostActivePage={mostActivePage}
+        />
         {conflicts.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-zinc-300 bg-white p-10 text-center text-zinc-500">
             No conflicts to show yet.
