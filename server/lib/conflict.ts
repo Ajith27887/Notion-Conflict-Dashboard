@@ -1,71 +1,192 @@
-import type { Snapshot } from "../../app/generated/prisma/index.js";
 import prisma from "../PrismaClient.js";
 
 export type ConflictSummary = {
 	conflictsCreated: number;
 };
 
-// Detect blocks that have been synced by 2+ distinct users and record a Conflict
-// row for each newly-found pair. This is presence-based, not content-based:
-// Snapshot.userId records who *synced* the block, not who *edited* it in Notion
-// (no last_edited_by/last_edited_time is captured), so "conflict" here means "this
-// block has contributions from multiple connected users," which is the strongest
-// signal the current schema can give. sync-002/sync-004 can call this same routine
-// after every sync run, the same way they reuse sync-001's syncWorkspaceForUser.
+// Change-based conflict detection (conflict-007, replacing conflict-001's
+// presence-based MVP): a Conflict is recorded only when a block's CONTENT
+// actually changed between snapshots — the previous version (user1 side) vs the
+// new version (user2 side), attributed to the real Notion editor via the
+// last_edited_by metadata captured at sync time (sync.ts). Blocks merely synced
+// by multiple connections but never edited are no longer flagged.
 //
-// MVP limitations: no time-window (any two distinct contributors ever seen on a
-// block count, regardless of how far apart in time); with 3+ contributors on one
-// block, only the earliest pair is flagged (Conflict is a two-party model).
+// Attribution: notionLastEditedBy (a Notion user id) maps to a Concord User via
+// User.notionId. Bot/integration ids (API edits, including our own conflict-006
+// write-back), pre-migration snapshots (null metadata), and editors who never
+// connected all fall back to the snapshot's syncing user — every conflict side
+// therefore lands on a real User row (which the conflict-006 resolve flow's
+// token lookup depends on). The same person on both sides still counts
+// (maintainer-approved).
+//
+// Only the LATEST change per block is flagged per run: resolving an older
+// change would write stale content over the block's current state via the
+// conflict-006 write-back, so intermediate transitions stay in Snapshot history
+// but are not flagged.
+function mapEditor(
+	notionEditorId: string | null,
+	syncingUserId: number,
+	usersByNotionId: Map<string, number>,
+): number {
+	if (!notionEditorId) {
+		return syncingUserId;
+	}
+	return usersByNotionId.get(notionEditorId) ?? syncingUserId;
+}
+
+// Treat never-captured (null) and genuinely-empty ("") content as the same
+// value for change comparison, so pre-content-migration rows don't read as a
+// change to "".
+function norm(content: string | null): string {
+	return content ?? "";
+}
+
 export async function detectConflicts(): Promise<ConflictSummary> {
+	const users = await prisma.user.findMany({
+		select: { id: true, notionId: true },
+	});
+	const usersByNotionId = new Map(users.map((user) => [user.notionId, user.id]));
+
+	// Dedup set: every change already recorded, resolved conflicts included —
+	// a resolved change must never resurrect as a new unresolved conflict.
+	const existingConflicts = await prisma.conflict.findMany({
+		where: { sourceSnapshotId: { not: null } },
+		select: { sourceSnapshotId: true },
+	});
+	const existingSources = new Set(existingConflicts.map((c) => c.sourceSnapshotId));
+
+	// Anti-loop data: keep-resolutions (conflict-006) record what they wrote
+	// back to Notion in resolvedContent. The write-back itself changes the real
+	// block, which the next sync captures as a new change — recognized and
+	// suppressed below by content + time window.
+	const resolutions = await prisma.conflict.findMany({
+		where: { resolvedContent: { not: null } },
+		select: { blockId: true, resolvedContent: true, resolvedAt: true },
+	});
+	const resolutionsByBlock = new Map<string, { resolvedContent: string; resolvedAt: Date | null }[]>();
+	for (const resolution of resolutions) {
+		if (!resolutionsByBlock.has(resolution.blockId)) {
+			resolutionsByBlock.set(resolution.blockId, []);
+		}
+		resolutionsByBlock.get(resolution.blockId)!.push({
+			resolvedContent: resolution.resolvedContent!,
+			resolvedAt: resolution.resolvedAt,
+		});
+	}
+
+	// Candidate blocks: one aggregate row per distinct NON-EMPTY (blockId,
+	// content) — a block with 2+ distinct real contents has been edited from one
+	// version to another at some point. Empty/never-captured content is excluded
+	// here (and again in the scan below): a block whose only history is
+	// null/"" -> text was authored, not edited, and has no previous version to
+	// show. Unchanged blocks (the vast majority of the 60s poller's output) never
+	// leave the DB, unlike the old full-table findMany.
+	const contentGroups = await prisma.snapshot.groupBy({
+		by: ["blockId", "content"],
+		where: { AND: [{ content: { not: null } }, { content: { not: "" } }] },
+	});
+	const contentCountByBlock = new Map<string, number>();
+	for (const group of contentGroups) {
+		contentCountByBlock.set(group.blockId, (contentCountByBlock.get(group.blockId) ?? 0) + 1);
+	}
+	const candidateBlockIds = [...contentCountByBlock.entries()]
+		.filter(([, count]) => count >= 2)
+		.map(([blockId]) => blockId);
+
+	if (candidateBlockIds.length === 0) {
+		return { conflictsCreated: 0 };
+	}
+
 	const snapshots = await prisma.snapshot.findMany({
-		orderBy: { createdAt: "asc" },
+		where: { blockId: { in: candidateBlockIds } },
+		orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+		select: {
+			id: true,
+			blockId: true,
+			pageId: true,
+			userId: true,
+			content: true,
+			notionLastEditedBy: true,
+			notionLastEditedTime: true,
+			createdAt: true,
+		},
 	});
 
-	const latestByBlock = new Map<string, Map<number, Snapshot>>();
+	const snapshotsByBlock = new Map<string, typeof snapshots>();
 	for (const snapshot of snapshots) {
-		if (!latestByBlock.has(snapshot.blockId)) {
-			latestByBlock.set(snapshot.blockId, new Map());
+		if (!snapshotsByBlock.has(snapshot.blockId)) {
+			snapshotsByBlock.set(snapshot.blockId, []);
 		}
-		// Ascending order means a later snapshot for the same user overwrites the
-		// earlier one, leaving each user's latest touch on this block.
-		latestByBlock.get(snapshot.blockId)!.set(snapshot.userId, snapshot);
+		snapshotsByBlock.get(snapshot.blockId)!.push(snapshot);
 	}
 
 	let conflictsCreated = 0;
 
-	for (const [blockId, byUser] of latestByBlock) {
-		if (byUser.size < 2) {
+	for (const [blockId, chain] of snapshotsByBlock) {
+		// Only non-empty snapshots are real "versions". A transition from empty or
+		// never-captured content (norm() === "") to text is block authoring, not
+		// an edit of an existing version — there is no previous version to show
+		// side by side, so it must not be a conflict. Filtering these out also
+		// collapses a transient empty read between two real versions (A, "", B),
+		// so A -> B is still detected as one change. (Legacy pre-conflict-005
+		// rows store null; genuinely empty blocks store "".)
+		const versions = chain.filter((snapshot) => norm(snapshot.content) !== "");
+		// Latest consecutive pair of real versions whose content differs.
+		let prev: (typeof snapshots)[number] | null = null;
+		let next: (typeof snapshots)[number] | null = null;
+		for (let i = versions.length - 1; i >= 1; i -= 1) {
+			if (norm(versions[i - 1].content) !== norm(versions[i].content)) {
+				prev = versions[i - 1];
+				next = versions[i];
+				break;
+			}
+		}
+		if (!prev || !next) {
 			continue;
 		}
 
-		const contributors = [...byUser.values()].sort(
-			(a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-		);
-		const [user1, user2] = contributors;
+		// Historical-noise guard: only changes whose NEW side carries real edit
+		// metadata (captured post-migration) are flagged. The first run of this
+		// logic creates zero conflicts out of weeks of pre-migration dev churn,
+		// matching the clean-slate decision that deleted the 90 presence-based
+		// false positives. (The prev side MAY be pre-migration — attribution
+		// then falls back to its syncing user.)
+		if (next.notionLastEditedTime === null) {
+			continue;
+		}
 
-		const existing = await prisma.conflict.findFirst({
-			where: {
-				blockId,
-				OR: [
-					{ user1Id: user1.userId, user2Id: user2.userId },
-					{ user1Id: user2.userId, user2Id: user1.userId },
-				],
-			},
-		});
-		if (existing) {
+		// Dedup: this exact change (identified by its new-side snapshot) was
+		// already recorded, whether still unresolved or since resolved.
+		if (existingSources.has(next.id)) {
+			continue;
+		}
+
+		// Anti-loop: this "change" is a conflict-006 write-back landing — the
+		// resolution wrote exactly this content, and the pre-change snapshot
+		// predates the resolution. A genuinely later human re-edit to the same
+		// text has prev AFTER resolvedAt and is still flagged.
+		const blockResolutions = resolutionsByBlock.get(blockId) ?? [];
+		const isWritebackLanding = blockResolutions.some(
+			(resolution) =>
+				norm(resolution.resolvedContent) === norm(next.content) &&
+				resolution.resolvedAt !== null &&
+				resolution.resolvedAt >= prev.createdAt,
+		);
+		if (isWritebackLanding) {
 			continue;
 		}
 
 		await prisma.conflict.create({
 			data: {
-				pageId: user1.pageId,
+				pageId: next.pageId,
 				blockId,
-				user1Id: user1.userId,
-				user2Id: user2.userId,
+				user1Id: mapEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId),
+				user2Id: mapEditor(next.notionLastEditedBy, next.userId, usersByNotionId),
 				status: "unresolved",
 				resolvedBy: "",
-				user1Content: user1.content,
-				user2Content: user2.content,
+				user1Content: prev.content,
+				user2Content: next.content,
+				sourceSnapshotId: next.id,
 			},
 		});
 		conflictsCreated += 1;

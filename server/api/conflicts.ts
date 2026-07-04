@@ -103,6 +103,13 @@ router.patch("/:id/resolve", async (req: Request, res: Response) => {
 				status: "resolved",
 				resolvedBy,
 				resolvedAt: new Date(),
+				// Record what a keep-resolution actually wrote back to Notion so
+				// detectConflicts() can recognize the write-back landing on the next
+				// sync and not flag it as a new change (conflict-007 anti-loop).
+				// Legacy keep-less resolutions leave it null — they wrote nothing.
+				...(keep !== undefined
+					? { resolvedContent: keep === "user1" ? existing.user1Content : existing.user2Content }
+					: {}),
 			},
 		});
 

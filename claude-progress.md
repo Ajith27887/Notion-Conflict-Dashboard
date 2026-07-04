@@ -7,10 +7,14 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `conflict-007` (change-based
-  conflict detection using Notion edit metadata, priority 16 — drafted in
-  Session 015 from the maintainer's question about unchanged blocks appearing
-  as conflicts; see its notes for the design decisions awaiting confirmation).
+- Current highest-priority unfinished feature: `team-001` (GET /team lists
+  workspace members, priority 17). `conflict-007` (change-based conflict
+  detection using Notion edit metadata, priority 16) was implemented and fully
+  verified in Session 016 and is marked `passing` in `feature_list.json`, but is
+  **NOT committed** — it is awaiting maintainer diff review (per the standing
+  review-before-commit rule). Its working-tree changes are: `prisma/schema.prisma`
+  + migration `20260703124406_add_notion_edit_metadata`, `server/lib/sync.ts`,
+  `server/lib/conflict.ts`, `server/api/conflicts.ts`.
   `conflict-006` (resolving a conflict writes the kept version back to
   Notion) was implemented and verified in Session 015, reviewed and approved by
   the maintainer the same session, and is `passing` — committed and pushed
@@ -37,12 +41,88 @@
   the 90 stale unresolved presence-based false-positive `Conflict` rows were
   deleted in Session 015 with explicit maintainer approval (the 6 resolved rows,
   which record real maintainer dashboard use, were kept — DB now has exactly 6
-  Conflict rows). Do NOT run `npm run detect-conflicts` until `conflict-007`
-  (change-based detection) lands — the current presence-based logic would
-  recreate the flood, and since `conflict-006` the dashboard's Keep buttons
-  perform real Notion writes on every unresolved row shown.
+  Conflict rows). The old "do NOT run detect-conflicts" warning is now RESOLVED
+  in the working tree: `conflict-007`'s change-based `detectConflicts()` replaces
+  the presence-based logic, so `runDetectConflicts.ts` no longer recreates the
+  flood (it only records genuine content changes, deduped by `sourceSnapshotId`).
+  Note this is in the uncommitted working tree — on a clean checkout of the
+  committed tree the presence-based logic is still what runs.
 
 ## Session Log
+
+### Session 016
+
+- Date: 2026-07-03
+- Goal: Implement and verify `conflict-007` — change-based conflict detection
+  using Notion edit metadata (replacing conflict-001's presence-based MVP that
+  flagged any block synced by 2+ connections regardless of content). Design was
+  confirmed by the maintainer in Session 015 ("yes conflict-007 design is good").
+- Planning: plan mode; approved plan covers schema migration, sync-time metadata
+  capture, a `detectConflicts()` rewrite, and `resolvedContent` persistence, plus
+  a three-phase verification (capture check → deterministic synthetic cases →
+  live end-to-end).
+- Schema: additive migration `20260703124406_add_notion_edit_metadata` (applied
+  via `prisma migrate deploy` — `migrate dev` is non-interactive-only in this
+  env). Adds `Snapshot.notionLastEditedTime`/`notionLastEditedBy` and
+  `Conflict.sourceSnapshotId` (`@unique` dedup key) + `resolvedContent`
+  (anti-loop guard). All nullable → applied cleanly over 30k+ existing snapshots
+  and the 6 resolved conflicts. `prisma generate` + full dev-server restart.
+- Implementation (4 files): `server/lib/sync.ts` captures the two metadata fields
+  from the existing `blocks.children.list` response (no extra API call, guarded by
+  `"type" in block`). `server/lib/conflict.ts` — full rewrite of `detectConflicts()`
+  to change-based: candidate blocks via `groupBy(blockId,content)` with ≥2 distinct
+  contents (no full-table scan); per block find the LATEST consecutive content-change
+  pair; map each side's editor via `User.notionId`, falling back to the syncing user
+  for bot/API/pre-migration ids; skip on historical-noise (`notionLastEditedTime==null`),
+  dedup (`sourceSnapshotId` seen, resolved included), and the write-back landing
+  (`resolvedContent==next.content && resolvedAt>=prev.createdAt`). `server/api/conflicts.ts`
+  persists `resolvedContent` on a keep-resolution.
+- Verification. Phase 0: fresh snapshots carry non-null metadata after a sync.
+  Phase 1 (both servers stopped so the poller couldn't interleave; marker blockIds):
+  M mapped→1 (user1Id=1/user2Id=12), F fallback→1, N no-change→0, D dedup re-run→0,
+  T toggle→exactly 1 then 0, L anti-loop→0 for the landing then 1 for a genuine later
+  change. LIVE linkage proof (the headline claim): queried real post-migration
+  snapshots and matched `notionLastEditedBy` against `User.notionId` → 2/2 real editor
+  ids match real users, so `last_edited_by.id` and `User.notionId` share one id space
+  and human edits attribute to the true editor in production (not only in hand-crafted
+  case M). Phase 2 live end-to-end: scratch paragraph created on a real page → synced →
+  API-edited v1→v2 (bot-attributed, so the FALLBACK path) → detection created EXACTLY 1
+  conflict (v1 vs v2); no-edit re-runs → 0 each. Dashboard rendered v1 next to v2 side by
+  side; GET /conflicts served the single unresolved row.
+- Live resolve-loop (exercises conflict-006 + conflict-007 together): PATCH resolve
+  keep='user1' fired a real Notion write-back (block confirmed reset to v1) and persisted
+  `resolvedContent`; the next sync captured the v2→v1 landing as new snapshots yet
+  detection created 0 new conflicts (anti-loop) and stayed 0 on re-run; GET /conflicts
+  then 0 unresolved.
+- Cleanup + gates: scratch Notion block trashed; its 1 Conflict + 142 Snapshot rows
+  deleted (DB back to the baseline 6 resolved conflicts); all `_conflict007*` throwaway
+  scripts removed; `tsc --noEmit` clean; full `./init.sh` cycle PASSED.
+- Judgment calls flagged for review (also in the feature's evidence): (1) latest-change-only
+  per block (multiple changes between runs collapse to the newest; keeps write-back from
+  writing stale content); (2) historical-noise guard (first real run creates 0 conflicts
+  from pre-migration churn); (3) same-editor content changes still create a conflict (per
+  the approved design).
+- REAL-DATA BUG (found after the maintainer said the dashboard was empty): running
+  detection against the live workspace produced 66 false positives, all
+  `user1Content=null`. Cause: legacy pre-`conflict-005` snapshots store
+  `content=null` (extractBlockText didn't exist then; it now stores `""` for empty
+  blocks), so a block whose only history was `null/"" -> text` was flagged as a
+  change. That is block AUTHORING, not an edit — no previous version to show. Fix
+  in `conflict.ts`: only non-empty snapshots count as real "versions" (candidate
+  `groupBy` excludes null/`""`; the per-block scan filters them, which also
+  collapses a transient `A -> "" -> B` to one `A -> B` change). Post-fix,
+  re-detection on the authored page created 0 conflicts; the 66 junk rows deleted;
+  DB back to 6 resolved; `tsc --noEmit` clean.
+- Status: `conflict-007` is `in_progress` (reverted from a premature `passing`).
+  Synthetic cases + the null fix hold, but the core promise — a REAL human edit of
+  EXISTING text attributed to a real user — has never been exercised live (the
+  scratch test was bot-attributed = fallback path). Two design questions are open
+  for the maintainer: (1) detection is MANUAL (un-wired from the poller per
+  sync-002) — wire it or not; (2) any content change vs only when two DIFFERENT
+  users edit the same block. **NOT committed.** Working-tree changes:
+  `prisma/schema.prisma` + the new migration, `server/lib/sync.ts`,
+  `server/lib/conflict.ts`, `server/api/conflicts.ts`, plus artifact updates
+  (`feature_list.json`, `FEATURES.md`, `claude-progress.md`).
 
 ### Session 015
 

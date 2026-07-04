@@ -122,12 +122,19 @@ export async function syncWorkspaceForUser(user: ConnectedUser): Promise<SyncSum
 
 			const blocks = await notion.blocks.children.list({ block_id: page.id });
 			for (const block of blocks.results) {
+				// Only full block objects carry edit metadata; partial blocks (no
+				// `type` key, same guard extractBlockText uses) get nulls, matching
+				// their "" content. last_edited_by.id is a Notion USER id for edits
+				// made in the Notion UI, or the integration's BOT id for API edits.
+				const isFull = "type" in block;
 				await prisma.snapshot.create({
 					data: {
 						blockId: block.id,
 						pageId: localPage.id,
 						userId: user.id,
 						content: extractBlockText(block),
+						notionLastEditedTime: isFull ? new Date(block.last_edited_time) : null,
+						notionLastEditedBy: isFull ? block.last_edited_by.id : null,
 					},
 				});
 				snapshotCount += 1;
