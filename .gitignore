@@ -33,6 +33,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# notion webhook verification token (sync-005) — secret, captured at runtime
+.notion-webhook-token
+server/.notion-webhook-token
+
 # vercel
 .vercel
 

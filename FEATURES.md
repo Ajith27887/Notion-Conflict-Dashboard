@@ -1,6 +1,6 @@
 # App Features
 
-One line per feature, generated from `feature_list.json` (23 features, 15 passing / 1 in progress / 7 not started).
+One line per feature, generated from `feature_list.json` (24 features, 15 passing / 1 in progress / 8 not started).
 Legend: ✅ passing · 🚧 in progress · 🔴 blocked · ⬜ not started
 
 ## Auth
@@ -17,6 +17,7 @@ Legend: ✅ passing · 🚧 in progress · 🔴 blocked · ⬜ not started
 - ✅ `sync-002` — Once a workspace is connected, its pages and block snapshots refresh automatically about every 60 seconds without any manual action.
 - ✅ `sync-003` — The dashboard lists every connected Notion page and shows when each was last synced.
 - ✅ `sync-004` — A 'Sync Now' button on the dashboard triggers an immediate sync and the pages list/last-synced time updates.
+- ⬜ `sync-005` — Editing a monitored Notion page triggers a webhook so the change (and any conflict) appears on the dashboard within seconds instead of waiting for the 60s poll or a manual sync; the poll stays as a fallback backstop.
 
 ## Conflict
 - ✅ `conflict-001` — When two users edit the same block around the same time, a conflict is recorded.

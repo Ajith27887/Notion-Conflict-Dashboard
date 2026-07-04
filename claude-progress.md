@@ -8,13 +8,13 @@
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
 - Current highest-priority unfinished feature: `team-001` (GET /team lists
-  workspace members, priority 17). `conflict-007` (change-based conflict
-  detection using Notion edit metadata, priority 16) was implemented and fully
-  verified in Session 016 and is marked `passing` in `feature_list.json`, but is
-  **NOT committed** — it is awaiting maintainer diff review (per the standing
-  review-before-commit rule). Its working-tree changes are: `prisma/schema.prisma`
-  + migration `20260703124406_add_notion_edit_metadata`, `server/lib/sync.ts`,
-  `server/lib/conflict.ts`, `server/api/conflicts.ts`.
+  workspace members, priority 18). `sync-005` (Notion webhook receiver triggers
+  sync + detection on real edits, priority 17) was implemented and proven live
+  end-to-end in Session 017 and is `passing` — reviewed/approved by the maintainer
+  the same session and committed + pushed. `conflict-007` (change-based conflict
+  detection using Notion edit metadata, priority 16) was implemented and verified
+  in Session 016, is `passing`, and was committed as WIP (`1429a1e`); its real
+  human-edit verification gap was closed by sync-005's Session 017 live test.
   `conflict-006` (resolving a conflict writes the kept version back to
   Notion) was implemented and verified in Session 015, reviewed and approved by
   the maintainer the same session, and is `passing` — committed and pushed
@@ -49,6 +49,40 @@
   committed tree the presence-based logic is still what runs.
 
 ## Session Log
+
+### Session 017
+
+- Date: 2026-07-04
+- Goal: Implement and verify `sync-005` — a Notion webhook receiver
+  (`POST /webhooks/notion`) that triggers sync + change-based detection on real
+  edits within seconds, replacing manual/polled triggering as the primary path
+  while keeping sync-002's 60s poll as a fallback backstop.
+- Implemented: `server/api/webhooks.ts` (new — handshake capture, HMAC-SHA256
+  signature verification over the raw body keyed by `NOTION_WEBHOOK_TOKEN`, fast
+  200-ack, off-path `syncPageForUser` → `detectConflicts`); `server/server.js`
+  (raw-body capture via `express.json({ verify })`; mounted `/webhooks`);
+  `server/lib/sync.ts` (behavior-preserving extraction of `snapshotPage` +
+  new exported page-scoped `syncPageForUser`); `.gitignore` (ignores
+  `.notion-webhook-token`). No schema change, no new dependency (`crypto` built-in).
+  Notion webhook protocol confirmed against live docs, not recall.
+- Verified: route logic in isolation (handshake/HMAC gate, 5/5) + `tsc --noEmit`
+  clean; then LIVE end-to-end — Notion subscription activated via a public
+  cloudflared quick tunnel (loca.lt proved unreliable, 0/10; cloudflared 8/8),
+  verification token captured to the git-ignored file and stored as
+  `NOTION_WEBHOOK_TOKEN` in `.env`; a real Notion block edit auto-drove
+  webhook → page-scoped sync (page id 135) → change-based detection → conflicts
+  on the dashboard with no manual trigger. DB inspection confirmed the created
+  conflicts (ids 364/365/366) are distinct real edits (distinct `sourceSnapshotId`),
+  not duplicates — dedup + backstop poll both intact. This live run also closed
+  `conflict-007`'s outstanding real-human-edit verification gap.
+- Runtime setup (NOT committed, session-scoped): the Express server, a public
+  tunnel, and `NOTION_WEBHOOK_TOKEN` in `.env` are required for the webhook to
+  fire but are not repo artifacts. A fresh session must re-establish a public
+  tunnel and re-point the Notion subscription's Webhook URL (trycloudflare/loca.lt
+  URLs are ephemeral per start) until `deploy-002` provides a stable hosted URL.
+- Baseline: full `./init.sh` not re-run end-to-end (maintainer's Next dev + the
+  live webhook servers were in use); Express boot healthy, `tsc --noEmit` clean.
+- Review/commit: maintainer approved and instructed commit + push the same session.
 
 ### Session 016
 

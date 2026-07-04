@@ -2,6 +2,7 @@ import express from "express";
 import auth from "./api/auth.ts"
 import sync from "./api/sync.ts"
 import conflicts from "./api/conflicts.ts"
+import webhooks from "./api/webhooks.ts"
 import cors from "cors";
 import { startSyncPolling, stopSyncPolling } from "./lib/syncScheduler.ts";
 
@@ -15,10 +16,14 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
-app.use(express.json());
+// Capture the raw request bytes as req.rawBody while still parsing JSON into req.body
+// for every route. The Notion webhook (sync-005) needs the exact bytes Notion signed
+// for HMAC verification; all other routes are unaffected.
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use("/auth", auth);
 app.use("/sync", sync);
 app.use("/conflicts", conflicts);
+app.use("/webhooks", webhooks);
 
 const server = app.listen(PORT, () => {
 	console.log(`Server is listing to ${PORT}`);

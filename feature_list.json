@@ -1,6 +1,6 @@
 {
   "project": "concord-notion-conflict-dashboard",
-  "last_updated": "2026-07-03",
+  "last_updated": "2026-07-04",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -406,8 +406,39 @@
       "notes": "Motivated by the maintainer's Session 015 question: unchanged blocks were showing as conflicts. Root cause is conflict-001's documented MVP shortcut — detection is presence-based (any block with Snapshot rows from 2+ distinct userIds is flagged, where userId records who SYNCED, not who edited), so the maintainer's two Notion connections made every mutually-synced block a 'conflict' regardless of content. This feature replaces that with change-based detection. DESIGN CONFIRMED by the maintainer 2026-07-03 ('yes conflict-007 design is good'), including: a content change by ANY editor creates a conflict, even if the previous and new editor are the same person — trivially restrictable to distinct-editors-only later if wanted. The 90 unresolved presence-based false positives were DELETED 2026-07-03 with explicit maintainer approval (same message), closing the cleanup item open since conflict-005 — deleteMany({ status: 'unresolved' }) removed exactly 90 rows; the 6 resolved rows (real maintainer dashboard interactions) were kept; DB confirmed at 6 total Conflict rows after. NOTE for the implementing session: do NOT run `npm run detect-conflicts` before this feature lands — the current presence-based logic would just recreate the false-positive flood, and since conflict-006 the dashboard's Keep buttons perform real Notion writes on those rows. Depends on sync-001 (snapshot pipeline) and touches conflict-001's detectConflicts(); conflict-006's write-back and the resolve flow are unaffected (they consume Conflict rows, not the detection logic). Notion's last_edited_by may be a bot/integration id for API-driven edits and last_edited_time has minute granularity — handle unmappable editors by skipping or falling back to the syncing user, documented at implementation time."
     },
     {
-      "id": "team-001",
+      "id": "sync-005",
       "priority": 17,
+      "area": "sync",
+      "title": "Notion webhook receiver triggers sync + detection on real edits",
+      "user_visible_behavior": "When someone edits a monitored Notion page, the change is captured and any resulting conflict appears on the dashboard within seconds — driven by Notion webhook events — instead of waiting for the 60-second poll or clicking 'Sync Now'. The 60-second poll is retained as a fallback reconciliation sweep so a missed webhook delivery still gets caught.",
+      "status": "passing",
+      "verification": [
+        "Add an inbound POST /webhooks/notion route on the Express server (mounted in server/server.js alongside /auth, /sync, /conflicts). It must read the RAW request body (needed for signature verification) before JSON parsing.",
+        "Complete Notion's one-time endpoint verification handshake: on the initial subscription request Notion sends a verification_token; capture it (store in .env / config, never commit or log it) so the subscription can be activated in the integration settings.",
+        "Verify every subsequent event's X-Notion-Signature (HMAC-SHA256 over the raw body keyed by the verification token) and reject/log-and-drop any request that fails; never act on an unverified payload. The signing secret and token stay in .env and out of all logs (per AGENTS.md).",
+        "Acknowledge fast: respond 200 immediately so Notion does not time out and retry, then do the sync + detect work off the response path (or complete it quickly if well under Notion's timeout).",
+        "On a relevant event (e.g. page.content_updated / block-level change) for a page Concord already tracks, run the sync-001 snapshot routine for the affected page (page-scoped if practical, else syncWorkspaceForUser) and then run detectConflicts() — so a genuine content edit surfaces as a Conflict with no manual action.",
+        "LIVE TEST (the feature's own verification): edit an existing (non-empty) block's text in the Notion UI on a monitored page and confirm — with no 'Sync Now' click and without waiting for the 60s poll — that a snapshot is written and (if content actually changed) exactly one Conflict appears on the dashboard within seconds, attributed to the editor. This is also the live human-edit path that conflict-007 still needs proven.",
+        "Idempotency: Notion may retry or double-deliver; confirm duplicate deliveries do not create duplicate Conflicts (conflict-007's sourceSnapshotId @unique dedup already covers this, but verify end-to-end).",
+        "Backstop unchanged: confirm sync-002's 60-second poll still runs and would catch a page whose webhook was missed (webhook is the fast path, poll is reconciliation — duplicate work is harmless thanks to dedup)."
+      ],
+      "evidence": [
+        "Added server/api/webhooks.ts (mirrors api/sync.ts/api/conflicts.ts): POST /webhooks/notion mounted in server.js as app.use('/webhooks', webhooks). Order of logic: (1) if the parsed body carries { verification_token } it is Notion's one-time handshake — persist the token to a git-ignored file (server/.notion-webhook-token, mode 0600) and ack 200, logging only the file PATH and an instruction, never the token value; (2) otherwise verify X-Notion-Signature = 'sha256=' + HMAC-SHA256(rawBody) keyed by process.env.NOTION_WEBHOOK_TOKEN, compared with crypto.timingSafeEqual after a length guard — missing token / missing rawBody / mismatch each log a distinct reason and 401 (log-and-drop, never act on an unverified payload); (3) on success ack 200 FIRST, then do the work off the response path via setImmediate so Notion (retries up to 8x over ~24h on non-2xx/timeout) never times out. Signature/handshake protocol confirmed against Notion's live docs (developers.notion.com/reference/webhooks + /webhooks-events-delivery): verification_token field, X-Notion-Signature: sha256=<hex>, HMAC over the raw body keyed by the token; delivered event has top-level type, entity:{id,type}, attempt_number.",
+        "server/server.js: replaced app.use(express.json()) with app.use(express.json({ verify: (req,_res,buf) => { req.rawBody = buf; } })) so the exact signed bytes are available for HMAC while every existing route's parsed req.body is unchanged. No CORS change — Notion posts server-to-server (no browser/preflight). No new dependency (crypto/fs/url are Node built-ins). No schema change.",
+        "server/lib/sync.ts: extracted a behavior-preserving snapshotPage(notion,user,page) helper (the exact per-page upsert+block-snapshot body syncWorkspaceForUser already ran, including the per-page try/catch and the pages-counted-after-upsert / snapshots-counted-in-loop semantics) and added exported syncPageForUser(user,notionPageId) for the webhook fast path (notion.pages.retrieve for one page, then snapshotPage). syncWorkspaceForUser now loops snapshotPage — verified unchanged behavior. Chose page-scoped sync because a full syncWorkspaceForUser is ~15-21s (sync-002/004 evidence) and would break the 'within seconds' promise; a full-workspace fallback still runs when an event's entity.id is not a tracked page (guards a dashed/undashed id mismatch). .gitignore now ignores .notion-webhook-token.",
+        "Route logic verified in isolation before any live traffic (throwaway harness on an ephemeral port, no DB writes, deleted after): handshake -> 200 + token written to the git-ignored file; missing signature -> 401; wrong signature -> 401; valid HMAC -> 200. 5/5. npx tsc --noEmit (root, covers server/*.ts): clean after every change.",
+        "LIVE handshake completed 2026-07-04: local dev needs a PUBLIC URL for Notion to reach the endpoint. loca.lt was tried first and proved unusable (0/10 requests reached the server — 408/502; the maintainer's first verify attempt was silently lost this way). Switched to a cloudflared quick tunnel (downloaded to ~/.local/bin/cloudflared; no signup) which probed 8/8 reachable through plain POSTs. Created the Notion webhook subscription pointed at <tunnel>/webhooks/notion; Notion POSTed the verification_token, the handler wrote it to server/.notion-webhook-token (log line: '[webhook] verification token received and written to ...' — value NOT logged), it was pasted into Notion's activation field, and Notion now reports the subscription 'currently active'. Stored as NOTION_WEBHOOK_TOKEN in .env (git-ignored; confirmed via git check-ignore).",
+        "Signature verification confirmed live end-to-end after loading NOTION_WEBHOOK_TOKEN and restarting Express: a correctly-signed event sent THROUGH the public tunnel -> HTTP 200 {ok:true}; the same event unsigned -> HTTP 401. HMAC gate is active on the real deployed path, not just the isolated harness.",
+        "LIVE TEST — the feature's own core, and the real-human-edit path conflict-007 still needed: the maintainer edited existing block text in the Notion UI on tracked page id 135 (notionPageId 3817f940-ff25-80c4-9afe-c09a634cba7e), with NO 'Sync Now' click and without waiting for the 60s poll. The server log shows the full auto-driven chain within seconds: '[webhook] inbound POST (type=page.content_updated, signature present)' -> 'signature verified -> acking 200, processing off the response path' -> 'handling event type=page.content_updated entity.type=page entity.id=3817f940-...' -> 'using connected user id=12' -> 'page is tracked (local page id=135) -> page-scoped sync' -> 'sync done: 1 page(s), 91 snapshot(s). Running detection...' -> 'DONE ... conflict(s) created'. The maintainer confirmed the conflict(s) on the dashboard with no manual action.",
+        "Change-based correctness / no over-detection (checked against the DB, not just log counts): Notion delivered two page.content_updated events for the edit session; the runs reported 1 then 2 conflicts created. A read-only DB inspection confirmed these are three DISTINCT real edits, not duplicates — Conflict ids 364/365/366, each with a distinct sourceSnapshotId (83968/84155/84158) and genuinely differing prev(user1Content)->new(user2Content) text on the block. The count matched the number of blocks actually changed between deliveries. A re-delivery of the same change is suppressed by the Conflict.sourceSnapshotId @unique + existingSources dedup in detectConflicts() (conflict-007), so idempotency holds end-to-end.",
+        "Backstop unchanged: the 60s poll (sync-002) was left running throughout ('Sync polling started: every 60000ms.' in the boot log; 'Sync poll complete ...' lines interleaved with the webhook activity) — webhook is the fast path, poll is reconciliation, duplicate work harmless thanks to dedup.",
+        "Baseline note (honest scope): the full ./init.sh baseline was NOT re-run end-to-end this session because the maintainer's Next dev (3000) and the live webhook Express+tunnel were in active use; the Express boot was confirmed healthy on the same code (server up on 3001, /auth/ path and existing routes unaffected by the new express.json({verify}) middleware) and npx tsc --noEmit is clean. Re-run the standard ./init.sh baseline after stopping the session's servers for a from-clean confirmation."
+      ],
+      "notes": "Passing — proven live end-to-end 2026-07-04 (real Notion edit -> webhook -> page-scoped sync -> change-based detection -> conflict on the dashboard, no manual trigger). This live run also closes conflict-007's one outstanding gap (a real human edit of existing block text, attributed to a real Concord user, exercised live). RUNTIME SETUP (not committed, session-scoped): the Express server, the public tunnel, and NOTION_WEBHOOK_TOKEN in .env are required for the webhook to fire but are not part of the repo — a fresh session must re-establish a public tunnel and (because trycloudflare/loca.lt URLs are ephemeral per start) re-point the Notion subscription's Webhook URL, unless deploy-002 provides a stable hosted URL. TUNNEL LESSON for next session: loca.lt was unreliable here (0/10); a cloudflared quick tunnel (no signup) was reliable (8/8). Replaces MANUAL/polled triggering as the PRIMARY path while keeping sync-002 (60s poll) as a fallback backstop — maintainer decision 2026-07-03 ('keep poll as fallback'). Depends on sync-001 (snapshot routine), sync-002 (backstop poll), and conflict-007 (change-based detection + sourceSnapshotId dedup + real-editor attribution). This directly resolves conflict-007's open 'manual vs auto detection' question by making detection event-driven. Local dev needs a PUBLIC URL for Notion to reach the endpoint (a tunnel such as ngrok, or the deployed instance from deploy-002); note this in the implementing session. Notion webhook events reference the changed page/block ids but do NOT include an access token or who-edited attribution beyond ids — attribution still comes from the subsequent sync's last_edited_by capture (conflict-007), so the flow is: webhook event -> page-scoped sync (captures last_edited_by) -> detectConflicts(). Security: verification_token and any signing secret live in .env (git-ignored) and must never be logged or committed. Inserted at priority 17 on maintainer instruction; team-001..deploy-002 bumped +1 (same insertion pattern used for conflict-007)."
+    },
+    {
+      "id": "team-001",
+      "priority": 18,
       "area": "team",
       "title": "GET /team lists workspace members",
       "user_visible_behavior": "The app can list all users connected to the same workspace as one team.",
@@ -422,7 +453,7 @@
     },
     {
       "id": "team-002",
-      "priority": 18,
+      "priority": 19,
       "area": "team",
       "title": "Email notification when a new conflict is detected (nodemailer)",
       "user_visible_behavior": "When a new conflict is detected, the involved team members receive an email notification.",
@@ -437,7 +468,7 @@
     },
     {
       "id": "team-003",
-      "priority": 19,
+      "priority": 20,
       "area": "team",
       "title": "Team members page (avatar, name, conflict count)",
       "user_visible_behavior": "A team page shows each member's avatar, name, and how many conflicts they are involved in.",
@@ -452,7 +483,7 @@
     },
     {
       "id": "team-004",
-      "priority": 20,
+      "priority": 21,
       "area": "team",
       "title": "Filter conflicts by member and new-conflict notification badge",
       "user_visible_behavior": "The user can filter the conflicts list by team member and sees a badge on the dashboard when a new conflict arrives.",
@@ -467,7 +498,7 @@
     },
     {
       "id": "polish-001",
-      "priority": 21,
+      "priority": 22,
       "area": "polish",
       "title": "Error, loading, and empty states + mobile responsiveness",
       "user_visible_behavior": "The app handles errors gracefully, shows loading indicators while fetching, shows friendly empty states, and is usable on mobile.",
@@ -483,7 +514,7 @@
     },
     {
       "id": "deploy-001",
-      "priority": 22,
+      "priority": 23,
       "area": "deploy",
       "title": "Seed demo data for showcase",
       "user_visible_behavior": "A seed script populates realistic demo users, pages, snapshots, and conflicts so the dashboard looks populated for a demo.",
@@ -498,7 +529,7 @@
     },
     {
       "id": "deploy-002",
-      "priority": 23,
+      "priority": 24,
       "area": "deploy",
       "title": "Deploy to Supabase + Render + Vercel",
       "user_visible_behavior": "The app is reachable at a public URL: frontend on Vercel, backend on Render, database on Supabase.",

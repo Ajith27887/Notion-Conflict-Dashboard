@@ -70,6 +70,70 @@ export function extractBlockText(block: PartialBlockObjectResponse | BlockObject
 	return typeSpecific.rich_text.map((item) => item.plain_text).join("");
 }
 
+// Upsert one page and snapshot its top-level blocks. Shared by the workspace-wide
+// sync (loops every page) and the page-scoped webhook sync (sync-005), so both paths
+// snapshot a page identically. The per-page try/catch keeps one bad page (e.g. a
+// duplicate title) from aborting the caller's whole run. Never logs the token.
+async function snapshotPage(
+	notion: Client,
+	user: ConnectedUser,
+	page: PageObjectResponse,
+): Promise<SyncSummary> {
+	let pages = 0;
+	let snapshots = 0;
+
+	try {
+		const title = extractTitle(page);
+
+		// Upsert on the stable notionPageId. `tittle` is misspelled in the schema
+		// and is @unique — a duplicate title (e.g. two "Untitled" pages) throws a
+		// unique violation, so the whole per-page block is guarded and we skip the
+		// offender rather than aborting the entire sync.
+		const localPage = await prisma.page.upsert({
+			where: { notionPageId: page.id },
+			update: {
+				tittle: title,
+				workspaceId: user.workspaceId,
+			},
+			create: {
+				notionPageId: page.id,
+				tittle: title,
+				workspaceId: user.workspaceId,
+			},
+		});
+		pages = 1;
+
+		const blocks = await notion.blocks.children.list({ block_id: page.id });
+		for (const block of blocks.results) {
+			// Only full block objects carry edit metadata; partial blocks (no
+			// `type` key, same guard extractBlockText uses) get nulls, matching
+			// their "" content. last_edited_by.id is a Notion USER id for edits
+			// made in the Notion UI, or the integration's BOT id for API edits.
+			const isFull = "type" in block;
+			await prisma.snapshot.create({
+				data: {
+					blockId: block.id,
+					pageId: localPage.id,
+					userId: user.id,
+					content: extractBlockText(block),
+					notionLastEditedTime: isFull ? new Date(block.last_edited_time) : null,
+					notionLastEditedBy: isFull ? block.last_edited_by.id : null,
+				},
+			});
+			snapshots += 1;
+		}
+	} catch (error) {
+		// Log and continue so one bad page (e.g. duplicate title) does not abort
+		// the run. Never include the access token in logs.
+		console.error(
+			`Skipping page ${page.id} during sync:`,
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+
+	return { pages, snapshots };
+}
+
 // Fetch the connected user's Notion pages and snapshot each page's top-level blocks
 // into Postgres. This is the durable, reusable routine: sync-002 (60s interval) and
 // sync-004 (POST /sync) both call it. It never logs the access token.
@@ -97,57 +161,33 @@ export async function syncWorkspaceForUser(user: ConnectedUser): Promise<SyncSum
 		if (result.object !== "page" || !("properties" in result)) {
 			continue;
 		}
-		const page = result as PageObjectResponse;
-
-		try {
-			const title = extractTitle(page);
-
-			// Upsert on the stable notionPageId. `tittle` is misspelled in the schema
-			// and is @unique — a duplicate title (e.g. two "Untitled" pages) throws a
-			// unique violation, so the whole per-page block is guarded and we skip the
-			// offender rather than aborting the entire sync.
-			const localPage = await prisma.page.upsert({
-				where: { notionPageId: page.id },
-				update: {
-					tittle: title,
-					workspaceId: user.workspaceId,
-				},
-				create: {
-					notionPageId: page.id,
-					tittle: title,
-					workspaceId: user.workspaceId,
-				},
-			});
-			pageCount += 1;
-
-			const blocks = await notion.blocks.children.list({ block_id: page.id });
-			for (const block of blocks.results) {
-				// Only full block objects carry edit metadata; partial blocks (no
-				// `type` key, same guard extractBlockText uses) get nulls, matching
-				// their "" content. last_edited_by.id is a Notion USER id for edits
-				// made in the Notion UI, or the integration's BOT id for API edits.
-				const isFull = "type" in block;
-				await prisma.snapshot.create({
-					data: {
-						blockId: block.id,
-						pageId: localPage.id,
-						userId: user.id,
-						content: extractBlockText(block),
-						notionLastEditedTime: isFull ? new Date(block.last_edited_time) : null,
-						notionLastEditedBy: isFull ? block.last_edited_by.id : null,
-					},
-				});
-				snapshotCount += 1;
-			}
-		} catch (error) {
-			// Log and continue so one bad page (e.g. duplicate title) does not abort
-			// the run. Never include the access token in logs.
-			console.error(
-				`Skipping page ${page.id} during sync:`,
-				error instanceof Error ? error.message : String(error),
-			);
-		}
+		const summary = await snapshotPage(notion, user, result as PageObjectResponse);
+		pageCount += summary.pages;
+		snapshotCount += summary.snapshots;
 	}
 
 	return { pages: pageCount, snapshots: snapshotCount };
+}
+
+// Page-scoped sync for the webhook fast path (sync-005): snapshot a single known
+// page instead of searching + walking the whole workspace (~15-21s), so a real edit
+// surfaces within seconds. Reuses snapshotPage() so a webhook-driven snapshot is
+// byte-identical to a poll-driven one. Never logs the token.
+export async function syncPageForUser(
+	user: ConnectedUser,
+	notionPageId: string,
+): Promise<SyncSummary> {
+	if (!user.accessToken) {
+		throw new Error("Cannot sync: user has no Notion access token.");
+	}
+
+	const notion = new Client({ auth: user.accessToken });
+	const page = await notion.pages.retrieve({ page_id: notionPageId });
+
+	// A partial page response carries no `properties` (nothing to title/snapshot from).
+	if (!("properties" in page)) {
+		return { pages: 0, snapshots: 0 };
+	}
+
+	return snapshotPage(notion, user, page);
 }
