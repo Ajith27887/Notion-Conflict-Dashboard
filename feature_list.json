@@ -437,8 +437,40 @@
       "notes": "Passing — proven live end-to-end 2026-07-04 (real Notion edit -> webhook -> page-scoped sync -> change-based detection -> conflict on the dashboard, no manual trigger). This live run also closes conflict-007's one outstanding gap (a real human edit of existing block text, attributed to a real Concord user, exercised live). RUNTIME SETUP (not committed, session-scoped): the Express server, the public tunnel, and NOTION_WEBHOOK_TOKEN in .env are required for the webhook to fire but are not part of the repo — a fresh session must re-establish a public tunnel and (because trycloudflare/loca.lt URLs are ephemeral per start) re-point the Notion subscription's Webhook URL, unless deploy-002 provides a stable hosted URL. TUNNEL LESSON for next session: loca.lt was unreliable here (0/10); a cloudflared quick tunnel (no signup) was reliable (8/8). Replaces MANUAL/polled triggering as the PRIMARY path while keeping sync-002 (60s poll) as a fallback backstop — maintainer decision 2026-07-03 ('keep poll as fallback'). Depends on sync-001 (snapshot routine), sync-002 (backstop poll), and conflict-007 (change-based detection + sourceSnapshotId dedup + real-editor attribution). This directly resolves conflict-007's open 'manual vs auto detection' question by making detection event-driven. Local dev needs a PUBLIC URL for Notion to reach the endpoint (a tunnel such as ngrok, or the deployed instance from deploy-002); note this in the implementing session. Notion webhook events reference the changed page/block ids but do NOT include an access token or who-edited attribution beyond ids — attribution still comes from the subsequent sync's last_edited_by capture (conflict-007), so the flow is: webhook event -> page-scoped sync (captures last_edited_by) -> detectConflicts(). Security: verification_token and any signing secret live in .env (git-ignored) and must never be logged or committed. Inserted at priority 17 on maintainer instruction; team-001..deploy-002 bumped +1 (same insertion pattern used for conflict-007)."
     },
     {
-      "id": "team-001",
+      "id": "dash-005",
       "priority": 18,
+      "area": "dashboard",
+      "title": "Live dashboard: new conflicts appear in real time without a refresh or button click",
+      "user_visible_behavior": "With the dashboard open and untouched, a conflict produced by a Notion edit (delivered via the sync-005 webhook) appears in the list automatically within seconds — no page refresh and no 'Sync Now' / button click.",
+      "status": "passing",
+      "verification": [
+        "Add a server->browser push channel so the dashboard updates itself when a Conflict row is created. Recommended: Server-Sent Events (SSE) — a GET /events (or /conflicts/stream) endpoint on the Express server (3001) that holds the response open and writes 'data: ...\\n\\n' frames. The existing corsOptions already allows the http://localhost:3000 origin the EventSource GET needs.",
+        "Emit an event whenever detection creates a conflict: have the sync-005 webhook path (and/or detectConflicts) signal the SSE endpoint in-process (e.g. a shared Node EventEmitter) when conflictsCreated > 0, carrying at least the new conflict id(s)/pageId.",
+        "Add a 'use client' component mounted on app/Dashboard/page.tsx that opens an EventSource to the endpoint and, on a message, calls router.refresh() (the same revalidation SyncNowButton/ResolveConflictButtons already use) so the server component re-queries Prisma and re-renders with the new conflict — without a full page reload.",
+        "LIVE TEST: open http://localhost:3000/Dashboard and do NOT touch it. Edit an existing block's text in the Notion UI on a monitored page. Confirm the resulting conflict appears in the list within seconds with no refresh and no button click.",
+        "No-op case: with the dashboard open, run a sync that detects zero new conflicts (no real content change) and confirm the list does not change and there is no spurious update/flicker.",
+        "Resilience: confirm the EventSource reconnects on its own if the connection drops (bounce the Express server, or the tunnel blips) and resumes receiving updates without a manual refresh.",
+        "Backstop unchanged: sync-002's 60s poll and the sync-005 webhook still function; this feature only adds the browser-facing live update, it does not replace them."
+      ],
+      "evidence": [
+        "SSE chosen over WebSocket, reconfirmed with the maintainer during implementation ('if WebSocket need add it' -> presented the one-directional trade-off, maintainer selected SSE): the channel is strictly server->client, so WebSocket's full-duplex + new `ws` dependency + manual reconnect buy nothing; EventSource is a browser built-in and auto-reconnects.",
+        "Added server/lib/conflictEvents.ts: a module-singleton Node EventEmitter (the in-process signal channel — Node caches modules per process, so the webhook handler that creates conflicts and the SSE endpoint that serves browser clients share one instance; no broker needed because the only in-process conflict-creating path is the sync-005 webhook handler, co-located with the SSE clients). setMaxListeners(0) since one listener is added per open dashboard tab. Exports emitConflictsCreated({ pageId, count }).",
+        "server/api/webhooks.ts: after the existing detectConflicts() call in handleEvent, added `if (detection.conflictsCreated > 0) emitConflictsCreated({ pageId: tracked?.id ?? null, count: detection.conflictsCreated })`. Emitting HERE (not inside detectConflicts()) keeps conflict-007's detection function and its return type untouched (in-scope-only), and the webhook is the sole in-process path that both creates conflicts and shares the process with SSE clients (the manual runDetectConflicts.ts is a separate process — its emit would reach no listeners). Emitting only when >0 gives the no-op case (a zero-change run pushes nothing) for free.",
+        "Added server/api/events.ts (GET /events, mirrors the one-router-per-file api/*.ts convention; mounted in server/server.js as app.use('/events', events)): writes text/event-stream headers, an initial 'retry: 3000' + ': connected' frame, subscribes onConflict -> `data: <json>` to conflictEvents, a 25s ': ping' heartbeat, and on req 'close' BOTH clearInterval(heartbeat) AND conflictEvents.off(...) then res.end() (leaking either would accumulate one per reconnect, and reconnects are frequent by design). No CORS change (global cors already allows the localhost:3000 EventSource origin — confirmed in the response headers below); the global express.json({verify}) is a no-op on this bodyless GET.",
+        "Added app/components/conflict-live-updates/ConflictLiveUpdates.tsx ('use client', renders null): opens an EventSource to http://localhost:3001/events in useEffect and, on each message, startTransition(() => router.refresh()) — the exact revalidation path SyncNowButton/ResolveConflictButtons already use, so the Server Component re-queries Prisma and swaps in the new conflict with no full reload. No onerror handler needed (EventSource auto-reconnects; server also sends retry:3000). Cleanup closes the source on unmount. Mounted once inside <main> in app/Dashboard/page.tsx.",
+        "npx tsc --noEmit: clean (after implementation and again as the final gate).",
+        "Verified 2026-07-04. DB baseline before any test: 9 resolved / 0 unresolved Conflict rows (max id 366). The whole push channel is localhost:3000<->localhost:3001 and never touches the sync-005 cloudflared tunnel, so the in-process emit was triggered deterministically by self-delivering a signed webhook (NOTION_WEBHOOK_TOKEN is in .env) — no live Notion delivery / tunnel needed.",
+        "Transport check (curl -sN -D - http://localhost:3001/events): HTTP 200, Content-Type: text/event-stream, Access-Control-Allow-Origin: http://localhost:3000 (proves CORS covers the EventSource GET), the 'retry: 3000' + ': connected' frames, stream held open until the timeout cut it. Heartbeat check: a separate 28s capture recorded exactly 1 ': ping' (25s interval).",
+        "Positive push + no-op (deterministic, no tunnel — throwaway driver, deleted after): appended a scratch paragraph block to real tracked page id=135, captured it (syncPageForUser -> v1 snapshot), edited it to v2 via the Notion API (blocks.update — a real change; sets last_edited_time non-null, clearing conflict-007's historical-noise guard; fresh snapshot id clears the sourceSnapshotId dedup; content matches no resolvedContent so the anti-loop guard passes). Opened an SSE listener, then POSTed a signed page.content_updated event (X-Notion-Signature = sha256=HMAC-SHA256(rawBody, token), computed over the exact bytes) to /webhooks/notion. Result: webhook 200, server ran sync -> detect -> created exactly 1 Conflict (id 367, blockId = the scratch block, user1Content='dash-005 scratch v1...', user2Content='dash-005 scratch v2...'), and the SSE listener received exactly one frame: `data: {\"pageId\":135,\"count\":1}` (correct pageId + count). NO-OP: re-firing the signed webhook with NO intervening edit -> conflictsCreated=0 -> 0 new SSE frames (the idle dashboard would not flicker).",
+        "Real browser check of the client component (puppeteer-core@25 in the session scratchpad only — not committed — driving system google-chrome-stable headless; both dev servers up via npm run dev + npm start): loaded /Dashboard, set a window.__guard sentinel, then produced a live push (edit scratch block -> signed webhook). The new conflict card appeared with the card count rising by exactly one and the sentinel STILL intact (liveUpdateWorked=true, noHardReload=true — proves router.refresh() soft-revalidation, not a full document reload). Resilience: bounced the Express server (killed :3001, restarted) — the browser's EventSource reconnected on its own (observed the /events request count rise from 1 to 3 with no manual refresh), and a subsequent signed-webhook push was delivered live (card count rose again). Zero page/console errors throughout.",
+        "Cleanup verified 2026-07-04: deleted the 3 test Conflict rows (367/368/369 from the v1->v2, v3, v4 pushes), the 10 scratch-block Snapshot rows, and trashed the scratch Notion block via blocks.delete. DB confirmed restored to the exact baseline (9 resolved / 0 unresolved, max conflict id 366, 0 scratch snapshots). All four throwaway server/scripts/_dash005_*.ts and the scratchpad browser driver deleted — only runSync.ts/runDetectConflicts.ts remain in server/scripts. Token never logged (webhook handler already omits it; the driver signed in-process).",
+        "./init.sh baseline smoke check re-run from a clean boot after full teardown: Postgres reachable, /auth/ -> 302 to api.notion.com, / -> 200, 'Baseline smoke check PASSED', clean teardown (ports 3000/3001 confirmed free afterward)."
+      ],
+      "notes": "Passing — verified live 2026-07-04 (deterministic self-delivered signed webhook -> emit -> SSE frame, plus a headless-browser run showing the new conflict card appear with no reload and the EventSource reconnecting after an Express bounce). Completes the real-time story started by sync-005: sync-005 lands the conflict in Postgres within seconds of a Notion edit, but app/Dashboard/page.tsx is a Next.js server component that today only reflects new rows on load/refresh — so the user still has to refresh to see it. This feature adds the missing server->browser push so the OPEN dashboard updates with no user action. Transport chosen: SSE (maintainer confirmed over WebSocket during implementation), one-directional server->client, zero new dependencies. Depends on sync-005 (event-driven conflict creation), conflict-007 (change-based detection), and conflict-002/conflict-005 (dashboard conflict rendering + resolve UI). Design leaning (confirm at implementation): SSE over WebSocket — updates are one-directional server->client, SSE is simpler over the existing Express+CORS setup and auto-reconnects; a client-side interval poll of GET /conflicts is an acceptable MVP fallback (also satisfies 'no refresh/button') but is periodic, not true push. Inherits the pre-existing dynamic-rendering caveat that every feature touching app/Dashboard/page.tsx carries (see conflict-002). COUPLING NOTE for whoever resolves conflict-007's open 'wire detectConflicts into the 60s poller?' question: the SSE emit lives in the webhook handler (server/api/webhooks.ts), NOT inside detectConflicts(), so if detection is ever wired into another in-process path (e.g. the sync-002 poller), that path must ALSO call emitConflictsCreated({ pageId, count }) or conflicts it creates will silently not push to open dashboards. DEPLOY-002 NOTE: app/components/conflict-live-updates/ConflictLiveUpdates.tsx adds a new hardcoded 'http://localhost:3001/events' reference — joins the running deploy-002 inventory (login.jsx, runSync.ts, auth.ts redirectUri, SyncNowButton's SYNC_ENDPOINT, ResolveConflictButtons) that breaks under a hosted split. Inserted at priority 18 on maintainer instruction; team-001..deploy-002 bumped +1 (same insertion pattern used for conflict-007 and sync-005)."
+    },
+    {
+      "id": "team-001",
+      "priority": 19,
       "area": "team",
       "title": "GET /team lists workspace members",
       "user_visible_behavior": "The app can list all users connected to the same workspace as one team.",
@@ -453,7 +485,7 @@
     },
     {
       "id": "team-002",
-      "priority": 19,
+      "priority": 20,
       "area": "team",
       "title": "Email notification when a new conflict is detected (nodemailer)",
       "user_visible_behavior": "When a new conflict is detected, the involved team members receive an email notification.",
@@ -468,7 +500,7 @@
     },
     {
       "id": "team-003",
-      "priority": 20,
+      "priority": 21,
       "area": "team",
       "title": "Team members page (avatar, name, conflict count)",
       "user_visible_behavior": "A team page shows each member's avatar, name, and how many conflicts they are involved in.",
@@ -483,7 +515,7 @@
     },
     {
       "id": "team-004",
-      "priority": 21,
+      "priority": 22,
       "area": "team",
       "title": "Filter conflicts by member and new-conflict notification badge",
       "user_visible_behavior": "The user can filter the conflicts list by team member and sees a badge on the dashboard when a new conflict arrives.",
@@ -498,7 +530,7 @@
     },
     {
       "id": "polish-001",
-      "priority": 22,
+      "priority": 23,
       "area": "polish",
       "title": "Error, loading, and empty states + mobile responsiveness",
       "user_visible_behavior": "The app handles errors gracefully, shows loading indicators while fetching, shows friendly empty states, and is usable on mobile.",
@@ -514,7 +546,7 @@
     },
     {
       "id": "deploy-001",
-      "priority": 23,
+      "priority": 24,
       "area": "deploy",
       "title": "Seed demo data for showcase",
       "user_visible_behavior": "A seed script populates realistic demo users, pages, snapshots, and conflicts so the dashboard looks populated for a demo.",
@@ -529,7 +561,7 @@
     },
     {
       "id": "deploy-002",
-      "priority": 24,
+      "priority": 25,
       "area": "deploy",
       "title": "Deploy to Supabase + Render + Vercel",
       "user_visible_behavior": "The app is reachable at a public URL: frontend on Vercel, backend on Render, database on Supabase.",

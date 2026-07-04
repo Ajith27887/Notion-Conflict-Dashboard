@@ -2,6 +2,7 @@ import prisma from "../lib/prisma";
 import SyncNowButton from "../components/sync-now-button/SyncNowButton";
 import ResolveConflictButtons from "../components/resolve-conflict-buttons/ResolveConflictButtons";
 import StatCards from "../components/stat-cards/StatCards";
+import ConflictLiveUpdates from "../components/conflict-live-updates/ConflictLiveUpdates";
 
 const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -51,6 +52,7 @@ export default async function Dashboard() {
         </p>
       </header>
       <main className="px-8 py-10">
+        <ConflictLiveUpdates />
         <StatCards
           total={total}
           resolved={resolved}

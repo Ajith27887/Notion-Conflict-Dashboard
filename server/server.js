@@ -3,6 +3,7 @@ import auth from "./api/auth.ts"
 import sync from "./api/sync.ts"
 import conflicts from "./api/conflicts.ts"
 import webhooks from "./api/webhooks.ts"
+import events from "./api/events.ts"
 import cors from "cors";
 import { startSyncPolling, stopSyncPolling } from "./lib/syncScheduler.ts";
 
@@ -24,6 +25,7 @@ app.use("/auth", auth);
 app.use("/sync", sync);
 app.use("/conflicts", conflicts);
 app.use("/webhooks", webhooks);
+app.use("/events", events);
 
 const server = app.listen(PORT, () => {
 	console.log(`Server is listing to ${PORT}`);

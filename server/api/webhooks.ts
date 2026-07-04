@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import prisma from "../PrismaClient.js";
 import { syncPageForUser, syncWorkspaceForUser } from "../lib/sync.js";
 import { detectConflicts } from "../lib/conflict.js";
+import { emitConflictsCreated } from "../lib/conflictEvents.js";
 
 const router = express.Router();
 
@@ -80,6 +81,14 @@ async function handleEvent(body: Record<string, unknown>): Promise<void> {
 		`${LOG} DONE for page ${notionPageId}: ${detection.conflictsCreated} conflict(s) created ` +
 			`(${detection.conflictsCreated === 0 ? "no content change detected or already recorded" : "check the dashboard"}).`,
 	);
+
+	// dash-005: push the open dashboard(s) so a new conflict appears live. Only
+	// signal on a real creation — a zero-change run sends nothing, so an idle
+	// dashboard never flickers. tracked?.id is the local Page.id (null on the
+	// full-workspace fallback path).
+	if (detection.conflictsCreated > 0) {
+		emitConflictsCreated({ pageId: tracked?.id ?? null, count: detection.conflictsCreated });
+	}
 }
 
 router.post("/notion", async (req: Request, res: Response) => {

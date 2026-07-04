@@ -8,7 +8,11 @@
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
 - Current highest-priority unfinished feature: `team-001` (GET /team lists
-  workspace members, priority 18). `sync-005` (Notion webhook receiver triggers
+  workspace members, priority 19). `dash-005` (live dashboard — new conflicts
+  appear in real time via SSE, no refresh/button, priority 18) was implemented
+  and verified in Session 018 and is `passing` (awaiting maintainer review before
+  commit, per AGENTS.md — the code is in the working tree, uncommitted).
+  `sync-005` (Notion webhook receiver triggers
   sync + detection on real edits, priority 17) was implemented and proven live
   end-to-end in Session 017 and is `passing` — reviewed/approved by the maintainer
   the same session and committed + pushed. `conflict-007` (change-based conflict
@@ -49,6 +53,61 @@
   committed tree the presence-based logic is still what runs.
 
 ## Session Log
+
+### Session 018
+
+- Date: 2026-07-04
+- Goal: Implement and verify `dash-005` — the live dashboard. sync-005 lands a
+  conflict in Postgres within seconds of a Notion edit, but `app/Dashboard/page.tsx`
+  is a server component that only reflects new rows on load/refresh. dash-005 adds
+  the missing server→browser push so an OPEN, untouched dashboard shows the new
+  conflict within seconds — no refresh, no button click.
+- Transport decision: **SSE** (Server-Sent Events), reconfirmed with the maintainer
+  mid-session ("if WebSocket need add it" → presented the one-directional trade-off,
+  maintainer chose SSE). One-way server→client; `EventSource` is a browser built-in
+  and auto-reconnects; zero new dependencies.
+- Implemented (all in the uncommitted working tree, awaiting maintainer review):
+  - `server/lib/conflictEvents.ts` (new) — module-singleton Node `EventEmitter`
+    in-process bus + `emitConflictsCreated({ pageId, count })`.
+  - `server/api/webhooks.ts` — one addition in `handleEvent`: emit when
+    `detection.conflictsCreated > 0` (payload `{ pageId: tracked?.id ?? null, count }`).
+    Deliberately NOT emitted from inside `detectConflicts()` (keeps conflict-007's
+    detection pure; the manual `runDetectConflicts.ts` is a separate process whose
+    emit reaches no listeners — only the webhook path is in-process with SSE clients).
+  - `server/api/events.ts` (new) + mount `app.use('/events', events)` in
+    `server/server.js` — `GET /events` SSE: `text/event-stream`, `retry:3000` +
+    `: connected`, `data:` frame per emit, 25s `: ping` heartbeat, and on `req`
+    close BOTH `clearInterval` AND listener removal (or it leaks one per reconnect).
+  - `app/components/conflict-live-updates/ConflictLiveUpdates.tsx` (new, renders
+    null) — opens an `EventSource` to `:3001/events`; on message
+    `startTransition(() => router.refresh())` (same revalidation as
+    SyncNowButton/ResolveConflictButtons). Mounted inside `<main>` in
+    `app/Dashboard/page.tsx`.
+- Verified 2026-07-04 (DB baseline 9 resolved / 0 unresolved, max conflict id 366;
+  restored exactly afterward). The channel is localhost↔localhost — it never touches
+  the sync-005 tunnel, so the in-process emit was triggered deterministically by a
+  self-delivered signed webhook (`NOTION_WEBHOOK_TOKEN` in `.env`):
+  - Transport: `GET /events` → 200, `text/event-stream`, CORS origin allowed,
+    `retry:3000`/`: connected`, stream stays open; a 28s capture saw 1 `: ping`.
+  - Positive push: scratch block v1→v2 (real Notion `blocks.update`) + signed
+    `page.content_updated` POST → server sync→detect→**1 conflict** (id 367) and the
+    SSE listener got exactly one frame `data: {"pageId":135,"count":1}`.
+  - No-op: re-fired the signed webhook with no edit → `conflictsCreated=0` → 0 new
+    frames (no flicker).
+  - Browser (puppeteer-core + headless google-chrome-stable, scratchpad only): new
+    conflict card appeared with no hard reload (a `window.__guard` sentinel survived,
+    proving `router.refresh()` soft-revalidation); after bouncing Express the
+    `EventSource` reconnected on its own (/events request count 1→3) and a later push
+    was delivered live; zero page errors.
+  - `npx tsc --noEmit` clean; `./init.sh` baseline PASSES from a clean boot/teardown
+    (ports 3000/3001 free afterward).
+- Cleanup: deleted the 3 test conflicts (367/368/369), the 10 scratch snapshots,
+  trashed the scratch Notion block, removed all four `server/scripts/_dash005_*.ts`
+  throwaway scripts + the scratchpad browser driver. DB back to the exact baseline.
+- Inherited (not fixed, per precedent): `app/Dashboard/page.tsx` still has no
+  `dynamic = 'force-dynamic'` marker — deferred to deploy-002.
+- Next: maintainer reviews the diff, then commit (do not commit before review).
+  After that, `team-001` (priority 19) is the next unfinished feature.
 
 ### Session 017
 
