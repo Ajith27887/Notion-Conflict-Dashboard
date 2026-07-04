@@ -574,6 +574,37 @@
       ],
       "evidence": [],
       "notes": "Phase 7. Update the Notion OAuth redirect_uri to the deployed callback URL. All secrets via platform env vars, never committed."
+    },
+    {
+      "id": "team-005",
+      "priority": 26,
+      "area": "team",
+      "title": "Connected members page — shown only after Notion OAuth login",
+      "user_visible_behavior": "After a user logs in via Notion OAuth, they can open a members page that lists the members connected to their workspace (name, avatar, email). The page is gated behind login — an unauthenticated visitor does not see the members list.",
+      "status": "not_started",
+      "verification": [
+        "Log in via Notion OAuth (auth-001/auth-002) so a session/login state exists for the connected user.",
+        "Open the connected-members page in the frontend and verify it lists the User rows sharing the logged-in user's workspaceId, each with name, avatar, and email.",
+        "Confirm the page is NOT accessible / shows a login prompt when there is no logged-in user (the gate actually blocks unauthenticated access).",
+        "Confirm members from other workspaces are excluded."
+      ],
+      "evidence": [],
+      "notes": "Requested by the maintainer (Session 018): 'only I need connected member page when I login by Notion OAuth'. OVERLAP to reconcile before building: team-001 (GET /team lists workspace members) and team-003 (team members page with avatar/name/conflict count) already cover most of the data/UI — this feature's distinct requirement is the LOGIN GATE (only visible when authenticated) and scoping to CONNECTED members. Consider building on team-001's endpoint rather than duplicating. KEY CONSTRAINT: there is currently NO auth/session system wired (server/api/auth.ts upserts the User and redirects, but sets no cookie/session; jsonwebtoken + cookie-parser are installed yet unused — confirmed across conflict-004/conflict-005 notes). So this feature must ADD the login-state gate (session cookie or equivalent) as part of its scope, or it cannot enforce 'only when I login'. 'Connected members' == User rows (auth.ts only creates a User via OAuth), filtered by the logged-in user's workspaceId. Priority 26 is a non-disruptive append; reprioritize relative to team-001/003 as desired. Depends on auth-002 (login) and the User model."
+    },
+    {
+      "id": "team-006",
+      "priority": 27,
+      "area": "team",
+      "title": "Decide connection model: one 'main' connected user vs. every member connecting via OAuth",
+      "user_visible_behavior": "A documented, confirmed decision on whether Concord requires each teammate to connect via Notion OAuth, or can run on a single 'main' connected user — with the attribution behaviour of each option made explicit so the team page and conflict attribution are not misleading.",
+      "status": "not_started",
+      "verification": [
+        "Confirm the finding below against the live app: with only ONE connected user, run the full pipeline (webhook edit -> sync -> detect -> conflict on dashboard -> resolve/write-back) and verify it works end to end.",
+        "Confirm attribution behaviour: an edit made by a Notion member who has NOT connected to Concord is attributed (via last_edited_by -> notionId mapping) — verify whether it resolves to the real editor or falls back to the syncing user.",
+        "Record the maintainer's decision (single-main-user is sufficient vs. require each member to connect) and, if attribution-by-real-name matters, capture whether to add a Notion users.retrieve lookup so unmapped editors get named without connecting."
+      ],
+      "evidence": [],
+      "notes": "Requested by the maintainer (Session 018): 'two users need to connect in app or one main user is enough — check that'. PRELIMINARY FINDING from code review this session (server/api/auth.ts, server/lib/sync.ts, server/lib/conflict.ts): (1) User rows are created ONLY by the OAuth callback (upsert on notionId) — no other path creates a User. (2) Sync uses a SINGLE token: syncWorkspaceForUser, the sync-002 poller, POST /sync (sync-004), and the sync-005 webhook all select `prisma.user.findFirst({ where: { accessToken: { not: null } } })` (the first connected user), and that one token reads every page the integration can access. (3) Detection is change-based (conflict-007): the editor is taken from Notion's last_edited_by and mapped to a Concord User via User.notionId by mapEditor(); if the editor has no matching User row it FALLS BACK to the syncing user's id. CONCLUSION: ONE 'main' connected user is ENOUGH for the app to FUNCTION end to end (sync -> detect -> resolve -> conflict-006 write-back, which uses the kept user's token falling back to the other participant's). The old 'two connected users cause a presence-based false-positive flood' problem (sync-002/conflict-001) is GONE post conflict-007. HOWEVER attribution degrades: if the real editor never connected via OAuth, there is no notionId->User mapping, so both sides of a conflict collapse onto the single syncing user's name. To show each teammate's REAL identity on a conflict, that teammate must connect via OAuth at least once, OR the app must add a Notion users.retrieve call to name unmapped editor ids. RECOMMENDATION: one main user is sufficient to run and demo the app; require each member to connect only if per-editor attribution by real name is a product requirement. This is an investigation/decision task, not a code feature — close it by recording the decision (and spin off a real feature if 'name unmapped editors' is chosen). Depends on conflict-007 (attribution logic) and sync-005 (live pipeline)."
     }
   ]
 }
