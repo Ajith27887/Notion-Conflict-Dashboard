@@ -70,10 +70,18 @@ router.patch("/:id/resolve", async (req: Request, res: Response) => {
 
 			const keptUser = keep === "user1" ? existing.user1 : existing.user2;
 			const otherUser = keep === "user1" ? existing.user2 : existing.user1;
-			const accessToken = keptUser.accessToken ?? otherUser.accessToken;
+			// Prefer a participant's own token; but with team-006 Option B both
+			// participants can be token-less "shadow" users (neither connected via
+			// OAuth), so fall back to any connected user in the workspace — the same
+			// integration token sync/webhooks already write with.
+			const accessToken =
+				keptUser.accessToken ??
+				otherUser.accessToken ??
+				(await prisma.user.findFirst({ where: { accessToken: { not: null } } }))?.accessToken ??
+				null;
 			if (!accessToken) {
 				res.status(422).json({
-					message: "No Notion access token available for either conflict participant.",
+					message: "No connected Notion account is available to write the resolution back.",
 				});
 				return;
 			}

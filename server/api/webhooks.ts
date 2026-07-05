@@ -76,7 +76,12 @@ async function handleEvent(body: Record<string, unknown>): Promise<void> {
 	}
 	console.log(`${LOG} sync done: ${summary.pages} page(s), ${summary.snapshots} snapshot(s). Running detection...`);
 
-	const detection = await detectConflicts();
+	// Pass the syncing user's token/workspace so detection can name unmapped
+	// editors via Notion (team-006 Option B). user.accessToken is non-null here
+	// (selected on `accessToken: { not: null }`), but narrow for the type.
+	const detection = await detectConflicts(
+		user.accessToken ? { accessToken: user.accessToken, workspaceId: user.workspaceId } : undefined,
+	);
 	console.log(
 		`${LOG} DONE for page ${notionPageId}: ${detection.conflictsCreated} conflict(s) created ` +
 			`(${detection.conflictsCreated === 0 ? "no content change detected or already recorded" : "check the dashboard"}).`,
