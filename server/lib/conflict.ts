@@ -1,7 +1,16 @@
+import { Client } from "@notionhq/client";
 import prisma from "../PrismaClient.js";
 
 export type ConflictSummary = {
 	conflictsCreated: number;
+};
+
+// Context of the connected user whose token drives this detection run. Optional:
+// when absent (e.g. a tokenless script call), attribution degrades gracefully to
+// the syncing user and no Notion lookups are made.
+export type SyncContext = {
+	accessToken: string;
+	workspaceId: string;
 };
 
 // Change-based conflict detection (conflict-007, replacing conflict-001's
@@ -12,26 +21,73 @@ export type ConflictSummary = {
 // by multiple connections but never edited are no longer flagged.
 //
 // Attribution: notionLastEditedBy (a Notion user id) maps to a Concord User via
-// User.notionId. Bot/integration ids (API edits, including our own conflict-006
-// write-back), pre-migration snapshots (null metadata), and editors who never
-// connected all fall back to the snapshot's syncing user — every conflict side
-// therefore lands on a real User row (which the conflict-006 resolve flow's
-// token lookup depends on). The same person on both sides still counts
-// (maintainer-approved).
+// User.notionId. When there is no local match, team-006 Option B looks the editor
+// up in Notion (users.retrieve) with the syncing user's token and persists them as
+// a token-less "shadow" User, so a teammate who never connected via OAuth still
+// shows their REAL Notion name/avatar on the conflict. Only when there is no token,
+// no workspace, a lookup failure, or a non-person/bot editor do we fall back to the
+// snapshot's syncing user. Either way every conflict side lands on a real User row
+// (which the conflict-006 resolve flow's token lookup depends on). The same person
+// on both sides still counts (maintainer-approved).
 //
 // Only the LATEST change per block is flagged per run: resolving an older
 // change would write stale content over the block's current state via the
 // conflict-006 write-back, so intermediate transitions stay in Snapshot history
 // but are not flagged.
-function mapEditor(
+async function resolveEditor(
 	notionEditorId: string | null,
 	syncingUserId: number,
 	usersByNotionId: Map<string, number>,
-): number {
+	notion: Client | null,
+	workspaceId: string | null,
+): Promise<number> {
 	if (!notionEditorId) {
 		return syncingUserId;
 	}
-	return usersByNotionId.get(notionEditorId) ?? syncingUserId;
+	const mapped = usersByNotionId.get(notionEditorId);
+	if (mapped !== undefined) {
+		return mapped;
+	}
+	// Unmapped editor. Without a token/workspace we cannot name them, so keep
+	// today's behaviour (attribute to the syncing user).
+	if (!notion || !workspaceId) {
+		return syncingUserId;
+	}
+	try {
+		const editor = await notion.users.retrieve({ user_id: notionEditorId });
+		// Only real people carry a name/email worth attributing; bots (API edits,
+		// including our own write-back) and partial responses fall back.
+		if (!("type" in editor) || editor.type !== "person" || !editor.name) {
+			return syncingUserId;
+		}
+		// email is required + unique on User; a person may expose none (integration
+		// capability / privacy), so synthesize a unique placeholder from the notionId.
+		// If this person later connects, the OAuth upsert (auth.ts) overwrites it with
+		// their real email, keyed on the same notionId.
+		const email = editor.person?.email ?? `${notionEditorId}@unconnected.notion`;
+		const shadow = await prisma.user.upsert({
+			where: { notionId: notionEditorId },
+			update: {},
+			create: {
+				notionId: notionEditorId,
+				name: editor.name,
+				avatar: editor.avatar_url ?? null,
+				email,
+				workspaceId,
+				accessToken: null,
+			},
+			select: { id: true },
+		});
+		usersByNotionId.set(notionEditorId, shadow.id);
+		return shadow.id;
+	} catch (error) {
+		// Never let a lookup (or a rare unique-email collision) crash detection.
+		console.error(
+			`[detect] users.retrieve failed for editor ${notionEditorId}; attributing to syncing user:`,
+			error instanceof Error ? error.message : String(error),
+		);
+		return syncingUserId;
+	}
 }
 
 // Treat never-captured (null) and genuinely-empty ("") content as the same
@@ -41,7 +97,12 @@ function norm(content: string | null): string {
 	return content ?? "";
 }
 
-export async function detectConflicts(): Promise<ConflictSummary> {
+export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSummary> {
+	// team-006 Option B: name unmapped editors via Notion. No context -> no lookups,
+	// attribution stays as it was (fall back to the syncing user).
+	const notion = syncCtx ? new Client({ auth: syncCtx.accessToken }) : null;
+	const syncWorkspaceId = syncCtx?.workspaceId ?? null;
+
 	const users = await prisma.user.findMany({
 		select: { id: true, notionId: true },
 	});
@@ -180,8 +241,8 @@ export async function detectConflicts(): Promise<ConflictSummary> {
 			data: {
 				pageId: next.pageId,
 				blockId,
-				user1Id: mapEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId),
-				user2Id: mapEditor(next.notionLastEditedBy, next.userId, usersByNotionId),
+				user1Id: await resolveEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId, notion, syncWorkspaceId),
+				user2Id: await resolveEditor(next.notionLastEditedBy, next.userId, usersByNotionId, notion, syncWorkspaceId),
 				status: "unresolved",
 				resolvedBy: "",
 				user1Content: prev.content,
