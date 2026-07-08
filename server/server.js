@@ -11,9 +11,10 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 const corsOptions = {
-	origin: "http://localhost:3000",
+	origin: ["http://localhost:3000", "https://notion-conflict-dashboard.vercel.app"],
 	method: "GET, POST",
-	allowedHeaders: ['Content-Type', "Authorization"]
+	allowedHeaders: ['Content-Type', "Authorization"],
+	credentials: true
 }
 
 app.use(cors(corsOptions))
