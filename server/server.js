@@ -8,7 +8,7 @@ import cors from "cors";
 import { startSyncPolling, stopSyncPolling } from "./lib/syncScheduler.ts";
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 const corsOptions = {
 	origin: "http://localhost:3000",
