@@ -2,8 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { apiUrl } from "@/app/lib/api";
 
-const SYNC_ENDPOINT = "http://localhost:3001/sync";
+const SYNC_ENDPOINT = apiUrl("/sync");
 
 export default function SyncNowButton() {
 	const router = useRouter();

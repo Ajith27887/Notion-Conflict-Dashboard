@@ -12,9 +12,10 @@ async function main() {
 	});
 
 	if (!user) {
+		const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 		console.error(
 			"No connected user with a Notion access token found. " +
-				"Log in via the Notion OAuth flow first (http://localhost:3001/auth/), then re-run.",
+				`Log in via the Notion OAuth flow first (${apiBaseUrl}/auth/), then re-run.`,
 		);
 		process.exit(1);
 	}

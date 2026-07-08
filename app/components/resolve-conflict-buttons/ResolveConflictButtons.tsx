@@ -2,8 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { apiUrl } from "@/app/lib/api";
 
-const CONFLICTS_ENDPOINT = "http://localhost:3001/conflicts";
+const CONFLICTS_ENDPOINT = apiUrl("/conflicts");
 
 type Side = "user1" | "user2";
 

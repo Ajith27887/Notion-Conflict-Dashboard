@@ -1,9 +1,10 @@
 "use client"
 import "./login.scss"
+import { apiUrl } from "@/app/lib/api"
 
 const Login = () => {
 	const loginNotion =  async () => {
-		window.location.href = "http://localhost:3001/auth/";
+		window.location.href = apiUrl("/auth/");
 	}
 	return (
 		<div className="login-wrap-box">

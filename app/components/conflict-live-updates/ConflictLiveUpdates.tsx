@@ -2,12 +2,13 @@
 
 import { useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { apiUrl } from "@/app/lib/api";
 
 // dash-005: opens a Server-Sent Events stream to the Express server and, on each
 // push (a new conflict was detected server-side, e.g. via the sync-005 webhook),
 // revalidates the dashboard's Server Component so the new conflict appears with no
 // page reload and no button click. Behavior-only — renders nothing.
-const EVENTS_ENDPOINT = "http://localhost:3001/events";
+const EVENTS_ENDPOINT = apiUrl("/events");
 
 export default function ConflictLiveUpdates() {
 	const router = useRouter();
