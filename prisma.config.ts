@@ -9,6 +9,9 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // CLI/migration engine only (runtime clients use the pg adapter with DATABASE_URL).
+    // Supabase migrations must use the direct/session connection (5432), not the
+    // transaction pooler (6543/pgbouncer), which can't take migration advisory locks.
+    url: process.env["DIRECT_URL"] ?? process.env["DATABASE_URL"],
   },
 });
