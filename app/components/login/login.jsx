@@ -4,7 +4,7 @@ import { apiUrl } from "@/app/lib/api"
 
 const Login = () => {
 	const loginNotion =  async () => {
-		window.location.href = apiUrl("/auth/");
+		window.location.href = apiUrl("auth/");
 	}
 	return (
 		<div className="login-wrap-box">
