@@ -54,6 +54,46 @@
 
 ## Session Log
 
+### Session 019
+
+- Date: 2026-07-09
+- Goal: Implement and verify `conflict-008` — only flag conflicts between two
+  DIFFERENT users. Maintainer request: "if user1 edited last then user1 edits
+  again I don't want that as a conflict, I need only two different users'
+  conflicts." This closes `conflict-007`'s open design question #2 ("any content
+  change vs only when two DIFFERENT users edited the same block").
+- Change: `server/lib/conflict.ts` `detectConflicts()` — a same-user skip guard
+  (`if (user1Id === user2Id) continue;`) added immediately after both editors are
+  resolved (`resolveEditor` → `user1Id`/`user2Id`) and before `conflict.create`.
+  Compared on the RESOLVED Concord user (the user1/user2 the dashboard shows).
+  4 lines, no schema/migration/API change.
+- Decision (maintainer, this session): SKIP THE BLOCK when the latest
+  content-changed pair is same-author — do NOT scan back for an older cross-user
+  change (keeps conflict-007's "only the latest change per block per run").
+- Verification (behavioral, DB/snapshot level = the detection input): isolated
+  throwaway harness seeded a disposable page with two blocks and ran the REAL
+  `detectConflicts()`. Same-user block (two differing versions, both authored by
+  user1) → 0 conflicts (guard skips it). Different-user block (user1 → user2) →
+  exactly 1 conflict, correct attribution and prev→new content. Global run created
+  only that 1 test conflict; the 4 real candidate blocks stayed deduped and two
+  real bot write-back landings were suppressed by the existing anti-loop guard.
+  Harness cleaned up; DB back to 13 conflicts (5 unresolved). `npx tsc --noEmit`
+  clean on the server subtree. The guard is a pure resolved-id comparison and does
+  not depend on live Notion, so the DB-level test fully exercises it; a live
+  two-account Notion edit is the same optional confirmation noted in conflict-007.
+- Existing-data cleanup (guard is forward-only; the request is an end-state):
+  the DB still had 2 unresolved same-user conflicts (ids 10 & 11, user1 vs user1)
+  from conflict-007's "same editor counts" logic, still on the dashboard. With
+  maintainer approval, deleted exactly those 2 (deleteMany scoped to
+  status=unresolved AND user1Id===user2Id); kept the 3 real two-user unresolved
+  rows and all resolved history. DB now 11 Conflict rows, 3 unresolved, 0
+  unresolved same-user — dashboard shows only two-different-user conflicts.
+- `feature_list.json`: added `conflict-008` (priority 31, area conflict), now
+  `passing` with the evidence above.
+- State: code in the working tree, UNCOMMITTED — awaiting maintainer review per
+  AGENTS.md before commit. NOTE: the same-user row deletion above is a DB change
+  already applied to the shared DB (not reversible via the working tree).
+
 ### Session 018
 
 - Date: 2026-07-04

@@ -263,6 +263,17 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 
 		const user1Id = await resolveEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId, notion, syncWorkspaceId);
 		const user2Id = await resolveEditor(next.notionLastEditedBy, next.userId, usersByNotionId, notion, syncWorkspaceId);
+
+		// conflict-008: a conflict means two DIFFERENT people. If the same person
+		// authored both the previous and the new version (e.g. user1 edited last,
+		// then edited again), it's a normal single-author revision, not a conflict —
+		// skip it. Compared on the RESOLVED Concord user (the user1/user2 the
+		// dashboard shows), so "two different users" matches what a viewer sees. Only
+		// the latest changed pair is examined per run (same as conflict-007), so a
+		// same-author latest change skips the whole block for this run.
+		if (user1Id === user2Id) {
+			continue;
+		}
 		try {
 			await prisma.conflict.create({
 				data: {
