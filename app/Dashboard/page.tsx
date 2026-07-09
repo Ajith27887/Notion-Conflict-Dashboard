@@ -5,6 +5,12 @@ import ResolveConflictButtons from "../components/resolve-conflict-buttons/Resol
 import StatCards from "../components/stat-cards/StatCards";
 import ConflictLiveUpdates from "../components/conflict-live-updates/ConflictLiveUpdates";
 
+// Render on every request. This page reads live conflict/page data from Postgres,
+// so it must NOT be statically prerendered — without this, Next bakes /Dashboard at
+// build time and the deployed page freezes on build-time data (newly detected
+// conflicts never appear, and router.refresh()/SSE live updates can't re-fetch).
+export const dynamic = "force-dynamic";
+
 const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
   timeStyle: "short",

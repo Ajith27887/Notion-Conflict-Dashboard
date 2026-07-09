@@ -546,8 +546,32 @@
       "notes": "AWAKE-GATED (the crux on Render free tier): the poll is a setInterval INSIDE the Render process, so it runs only while the backend is awake. Free-tier Render spins down when idle; dashboard reads go straight to Supabase (not through Render), so nothing reliably keeps it warm. RECOMMENDED reliable path: an external cron ping (cron-job.org / UptimeRobot) hitting POST /sync every few minutes — it BOTH wakes Render AND runs detection, which the in-process timer cannot do while asleep. Separately, fixing the webhook (point the Notion subscription at https://<render>/webhooks/notion + set NOTION_WEBHOOK_TOKEN in Render) gives near-instant detection; this fix makes the poll/Sync-Now a real fallback. NOT yet behaviorally verified — confirm post-deploy via the logs above and a real edit. Per AGENTS.md, do not commit until maintainer review. Related: sync-002, sync-005, conflict-007, bug-001."
     },
     {
-      "id": "team-001",
+      "id": "bug-003",
       "priority": 21,
+      "area": "dashboard",
+      "type": "bug",
+      "title": "Deployed /Dashboard was statically prerendered — never showed newly detected conflicts",
+      "user_visible_behavior": "After editing a monitored Notion page (as user 2), no conflict appeared on the deployed dashboard even though the backend detected and stored the conflict.",
+      "status": "in_progress",
+      "reported": "2026-07-09",
+      "root_cause": "app/Dashboard/page.tsx had no dynamic-rendering marker, so Next statically prerendered /Dashboard at build time (confirmed: route was '○ Static', present in .next/prerender-manifest.json with a baked Dashboard.html). On Vercel the page was frozen with build-time data, so conflicts written to Postgres after the build never appeared — no edit, poll, manual refresh, or SSE event could update a static page. Diagnosis confirmed against prod DB: the 60s poll IS running and detection IS creating unresolved Conflict rows (bug-002 fix works), so the backend was fine; only the frozen static page hid them. This is the long-standing 'no dynamic-rendering marker' risk flagged in claude-progress.md.",
+      "fix_implemented": "Add `export const dynamic = \"force-dynamic\"` to app/Dashboard/page.tsx so it renders per-request and reads Postgres fresh on every load; router.refresh()/SSE live updates can now actually re-fetch. Also removes the build-time DB dependency (the page is no longer prerendered).",
+      "changes": [
+        "app/Dashboard/page.tsx: export const dynamic = 'force-dynamic'."
+      ],
+      "verification": [
+        "Local `npm run build`: /Dashboard now listed as 'ƒ (Dynamic) server-rendered on demand' (was '○ Static'); build succeeds without hitting the DB to prerender the page.",
+        "Post-deploy: after a real edit, the conflict appears on the dashboard on load/refresh (and live via SSE without a refresh)."
+      ],
+      "evidence": [
+        "Prod DB confirmed detection working: conflicts #4-#7 created unresolved on the poll in the ~17 min before diagnosis; latest snapshot 15s old (poll live).",
+        "Build route table shows ƒ /Dashboard after the fix."
+      ],
+      "notes": "Root cause of the 'auto sync not working' report was this frozen static dashboard, not the backend. Related: dash-005 (live updates), bug-002 (poll detection). Per AGENTS.md, do not commit until maintainer review."
+    },
+    {
+      "id": "team-001",
+      "priority": 22,
       "area": "team",
       "title": "GET /team lists workspace members",
       "user_visible_behavior": "The app can list all users connected to the same workspace as one team.",
@@ -562,7 +586,7 @@
     },
     {
       "id": "team-002",
-      "priority": 22,
+      "priority": 23,
       "area": "team",
       "title": "Email notification when a new conflict is detected (nodemailer)",
       "user_visible_behavior": "When a new conflict is detected, the involved team members receive an email notification.",
@@ -577,7 +601,7 @@
     },
     {
       "id": "team-003",
-      "priority": 23,
+      "priority": 24,
       "area": "team",
       "title": "Team members page (avatar, name, conflict count)",
       "user_visible_behavior": "A team page shows each member's avatar, name, and how many conflicts they are involved in.",
@@ -592,7 +616,7 @@
     },
     {
       "id": "team-004",
-      "priority": 24,
+      "priority": 25,
       "area": "team",
       "title": "Filter conflicts by member and new-conflict notification badge",
       "user_visible_behavior": "The user can filter the conflicts list by team member and sees a badge on the dashboard when a new conflict arrives.",
@@ -607,7 +631,7 @@
     },
     {
       "id": "polish-001",
-      "priority": 25,
+      "priority": 26,
       "area": "polish",
       "title": "Error, loading, and empty states + mobile responsiveness",
       "user_visible_behavior": "The app handles errors gracefully, shows loading indicators while fetching, shows friendly empty states, and is usable on mobile.",
@@ -623,7 +647,7 @@
     },
     {
       "id": "deploy-001",
-      "priority": 26,
+      "priority": 27,
       "area": "deploy",
       "title": "Seed demo data for showcase",
       "user_visible_behavior": "A seed script populates realistic demo users, pages, snapshots, and conflicts so the dashboard looks populated for a demo.",
@@ -638,7 +662,7 @@
     },
     {
       "id": "deploy-002",
-      "priority": 27,
+      "priority": 28,
       "area": "deploy",
       "title": "Deploy to Supabase + Render + Vercel",
       "user_visible_behavior": "The app is reachable at a public URL: frontend on Vercel, backend on Render, database on Supabase.",
@@ -654,7 +678,7 @@
     },
     {
       "id": "team-005",
-      "priority": 28,
+      "priority": 29,
       "area": "team",
       "title": "Connected members page — shown only after Notion OAuth login",
       "user_visible_behavior": "After a user logs in via Notion OAuth, they can open a members page that lists the members connected to their workspace (name, avatar, email). The page is gated behind login — an unauthenticated visitor does not see the members list.",
@@ -670,7 +694,7 @@
     },
     {
       "id": "team-006",
-      "priority": 29,
+      "priority": 30,
       "area": "team",
       "title": "Decide connection model: one 'main' connected user vs. every member connecting via OAuth",
       "user_visible_behavior": "A documented, confirmed decision on whether Concord requires each teammate to connect via Notion OAuth, or can run on a single 'main' connected user — with the attribution behaviour of each option made explicit so the team page and conflict attribution are not misleading.",
