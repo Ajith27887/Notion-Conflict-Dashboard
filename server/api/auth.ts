@@ -40,7 +40,11 @@ router.get("/callback",async (req: Request, res: Response) => {
 
 		const authenticatedNotion = new Client({ auth : AccessToken });
 
-        const botDetails = (await authenticatedNotion.users.me({})) as BotUserObjectResponse;
+        // users.me() returns the full UserObjectResponse — id lives on the common
+        // base. Keep that typed reference for the bot user id, and narrow to the bot
+        // variant for the workspace/owner fields (BotUserObjectResponse omits id).
+        const selfUser = await authenticatedNotion.users.me({});
+        const botDetails = selfUser as BotUserObjectResponse;
 
 		const workSpaceName = botDetails.bot.workspace_name;
 
@@ -64,12 +68,12 @@ router.get("/callback",async (req: Request, res: Response) => {
                     return res.status(400).send("Workspace ID missing from Notion response.");
                 }
 			
-				// botDetails.id is the integration's bot user id for this workspace —
+				// selfUser.id is the integration's bot user id for this workspace —
 				// the same id Notion stamps on last_edited_by for the app's own
 				// write-back edits. Persist it so detection can suppress those edits
 				// as write-back landings rather than flagging them as new conflicts
 				// (bug-001 anti-loop).
-				const botId = botDetails.id;
+				const botId = selfUser.id;
 
 				const newUser = await prisma.user.upsert({
 					where :{ notionId: userProfile.id },
