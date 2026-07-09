@@ -8,7 +8,7 @@ import prisma from "../PrismaClient.js";
 const router = express.Router();
 // Base URL of this server (== the frontend's API target). Configurable so the
 // OAuth redirect matches whatever host the server is deployed on.
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
 const redirectUri = `${API_BASE_URL}/auth/callback`
 
 router.get("/", (req: Request, res: Response) => {
