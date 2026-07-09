@@ -261,20 +261,34 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 			continue;
 		}
 
-		await prisma.conflict.create({
-			data: {
-				pageId: next.pageId,
-				blockId,
-				user1Id: await resolveEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId, notion, syncWorkspaceId),
-				user2Id: await resolveEditor(next.notionLastEditedBy, next.userId, usersByNotionId, notion, syncWorkspaceId),
-				status: "unresolved",
-				resolvedBy: "",
-				user1Content: prev.content,
-				user2Content: next.content,
-				sourceSnapshotId: next.id,
-			},
-		});
-		conflictsCreated += 1;
+		const user1Id = await resolveEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId, notion, syncWorkspaceId);
+		const user2Id = await resolveEditor(next.notionLastEditedBy, next.userId, usersByNotionId, notion, syncWorkspaceId);
+		try {
+			await prisma.conflict.create({
+				data: {
+					pageId: next.pageId,
+					blockId,
+					user1Id,
+					user2Id,
+					status: "unresolved",
+					resolvedBy: "",
+					user1Content: prev.content,
+					user2Content: next.content,
+					sourceSnapshotId: next.id,
+				},
+			});
+			conflictsCreated += 1;
+		} catch (error) {
+			// Detection now runs from both the webhook and the 60s poll, which can
+			// overlap. sourceSnapshotId is @unique, so a concurrent run that already
+			// recorded this exact change makes this create throw P2002 — treat that
+			// as "already created" (not this run's creation) and keep scanning the
+			// remaining blocks instead of aborting the whole run.
+			if (typeof error === "object" && error !== null && (error as { code?: string }).code === "P2002") {
+				continue;
+			}
+			throw error;
+		}
 	}
 
 	return { conflictsCreated };

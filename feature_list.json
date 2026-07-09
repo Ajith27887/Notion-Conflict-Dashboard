@@ -517,8 +517,37 @@
       ]
     },
     {
-      "id": "team-001",
+      "id": "bug-002",
       "priority": 20,
+      "area": "sync",
+      "type": "bug",
+      "title": "Conflicts don't auto-appear: detection was webhook-only; poll and Sync Now never detected",
+      "user_visible_behavior": "On the deployed app, editing a monitored Notion page (two users) produced no new conflict card automatically — nothing appeared without a working webhook.",
+      "status": "in_progress",
+      "reported": "2026-07-09",
+      "root_cause": "detectConflicts() ran from exactly ONE runtime path: the Notion webhook (server/api/webhooks.ts). Both the 60s poll (syncScheduler.pollOnce) and manual Sync Now (POST /sync) called only syncWorkspaceForUser (snapshots), never detectConflicts. So conflict CREATION depended entirely on the webhook. In the deployed setup (Vercel+Render) the webhook is fragile/likely not delivering: the Notion subscription URL was last pointed at an ephemeral dev cloudflared tunnel (dead), NOTION_WEBHOOK_TOKEN may be unset in Render, and Render free tier sleeps when idle. With the webhook down there was NO fallback — the poll's advertised 'fallback reconciliation sweep' (sync-005 note) only snapshotted, so conflicts never auto-appeared.",
+      "fix_implemented": "Run detectConflicts() after the sync in BOTH the 60s poll (server/lib/syncScheduler.ts) and manual Sync Now (server/api/sync.ts), passing the syncing user's token/workspace for editor attribution, and emitConflictsCreated() on real creations so the live dashboard (dash-005 SSE) updates. Now conflicts auto-appear every ~60s independent of the webhook, and Sync Now surfaces them immediately. Safe to run repeatedly: change-based detection with sourceSnapshotId @unique dedup + the bug-001 bot anti-loop means unchanged/known blocks create nothing. Added a P2002 (unique) catch in detectConflicts so overlapping poll+webhook runs can't abort each other mid-loop (concurrent create of the same change is a no-op). This intentionally supersedes sync-002's original 'detection deliberately not called from the poll' decision (that was scoped for the old presence-based detection; conflict-007 change-based detection is safe to poll).",
+      "changes": [
+        "server/lib/syncScheduler.ts: pollOnce runs detectConflicts + emitConflictsCreated after the workspace sync.",
+        "server/api/sync.ts: POST /sync runs detectConflicts + emit; response now includes conflictsCreated.",
+        "server/lib/conflict.ts: tolerate P2002 on conflict.create (concurrent poll+webhook detection)."
+      ],
+      "verification": [
+        "Deploy the backend (Render) with the updated code.",
+        "Real e2e: edit a monitored Notion page so two versions of a block exist; within ~60s (no webhook, no manual action) a conflict card appears on the dashboard. Server log shows 'Sync poll: N conflict(s) created.'",
+        "Manual: click Sync Now -> response includes conflictsCreated>0 when there is an unrecorded change, and the card appears.",
+        "Idempotency: let it run several ticks with no new edits -> 0 conflicts created per tick (no duplicates); confirm via unchanged dashboard."
+      ],
+      "evidence": [
+        "Offline: `npx tsc --noEmit` passes; syncScheduler.ts, sync.ts, conflict.ts import-load cleanly via tsx.",
+        "Read-only prod pre-check (no flood risk on first poll): 2 candidate blocks (>=2 distinct non-empty contents) vs 3 existing Conflict rows all with sourceSnapshotId -> first-poll burst risk LOW.",
+        "PENDING deployed e2e (needs Render redeploy): watch server logs for 'Sync poll complete ...' each tick and 'Sync poll: N conflict(s) created' after a real 2-version edit."
+      ],
+      "notes": "AWAKE-GATED (the crux on Render free tier): the poll is a setInterval INSIDE the Render process, so it runs only while the backend is awake. Free-tier Render spins down when idle; dashboard reads go straight to Supabase (not through Render), so nothing reliably keeps it warm. RECOMMENDED reliable path: an external cron ping (cron-job.org / UptimeRobot) hitting POST /sync every few minutes — it BOTH wakes Render AND runs detection, which the in-process timer cannot do while asleep. Separately, fixing the webhook (point the Notion subscription at https://<render>/webhooks/notion + set NOTION_WEBHOOK_TOKEN in Render) gives near-instant detection; this fix makes the poll/Sync-Now a real fallback. NOT yet behaviorally verified — confirm post-deploy via the logs above and a real edit. Per AGENTS.md, do not commit until maintainer review. Related: sync-002, sync-005, conflict-007, bug-001."
+    },
+    {
+      "id": "team-001",
+      "priority": 21,
       "area": "team",
       "title": "GET /team lists workspace members",
       "user_visible_behavior": "The app can list all users connected to the same workspace as one team.",
@@ -533,7 +562,7 @@
     },
     {
       "id": "team-002",
-      "priority": 21,
+      "priority": 22,
       "area": "team",
       "title": "Email notification when a new conflict is detected (nodemailer)",
       "user_visible_behavior": "When a new conflict is detected, the involved team members receive an email notification.",
@@ -548,7 +577,7 @@
     },
     {
       "id": "team-003",
-      "priority": 22,
+      "priority": 23,
       "area": "team",
       "title": "Team members page (avatar, name, conflict count)",
       "user_visible_behavior": "A team page shows each member's avatar, name, and how many conflicts they are involved in.",
@@ -563,7 +592,7 @@
     },
     {
       "id": "team-004",
-      "priority": 23,
+      "priority": 24,
       "area": "team",
       "title": "Filter conflicts by member and new-conflict notification badge",
       "user_visible_behavior": "The user can filter the conflicts list by team member and sees a badge on the dashboard when a new conflict arrives.",
@@ -578,7 +607,7 @@
     },
     {
       "id": "polish-001",
-      "priority": 24,
+      "priority": 25,
       "area": "polish",
       "title": "Error, loading, and empty states + mobile responsiveness",
       "user_visible_behavior": "The app handles errors gracefully, shows loading indicators while fetching, shows friendly empty states, and is usable on mobile.",
@@ -594,7 +623,7 @@
     },
     {
       "id": "deploy-001",
-      "priority": 25,
+      "priority": 26,
       "area": "deploy",
       "title": "Seed demo data for showcase",
       "user_visible_behavior": "A seed script populates realistic demo users, pages, snapshots, and conflicts so the dashboard looks populated for a demo.",
@@ -609,7 +638,7 @@
     },
     {
       "id": "deploy-002",
-      "priority": 26,
+      "priority": 27,
       "area": "deploy",
       "title": "Deploy to Supabase + Render + Vercel",
       "user_visible_behavior": "The app is reachable at a public URL: frontend on Vercel, backend on Render, database on Supabase.",
@@ -625,7 +654,7 @@
     },
     {
       "id": "team-005",
-      "priority": 27,
+      "priority": 28,
       "area": "team",
       "title": "Connected members page — shown only after Notion OAuth login",
       "user_visible_behavior": "After a user logs in via Notion OAuth, they can open a members page that lists the members connected to their workspace (name, avatar, email). The page is gated behind login — an unauthenticated visitor does not see the members list.",
@@ -641,7 +670,7 @@
     },
     {
       "id": "team-006",
-      "priority": 28,
+      "priority": 29,
       "area": "team",
       "title": "Decide connection model: one 'main' connected user vs. every member connecting via OAuth",
       "user_visible_behavior": "A documented, confirmed decision on whether Concord requires each teammate to connect via Notion OAuth, or can run on a single 'main' connected user — with the attribution behaviour of each option made explicit so the team page and conflict attribution are not misleading.",
