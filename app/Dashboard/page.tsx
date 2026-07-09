@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma";
+import Navbar from "../components/navbar/Navbar";
 import SyncNowButton from "../components/sync-now-button/SyncNowButton";
 import ResolveConflictButtons from "../components/resolve-conflict-buttons/ResolveConflictButtons";
 import StatCards from "../components/stat-cards/StatCards";
@@ -45,6 +46,7 @@ export default async function Dashboard() {
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans">
+      <Navbar />
       <header className="border-b border-zinc-200 bg-white px-8 py-6">
         <h1 className="text-2xl font-bold text-zinc-900">Dashboard</h1>
         <p className="mt-1 text-zinc-500">
