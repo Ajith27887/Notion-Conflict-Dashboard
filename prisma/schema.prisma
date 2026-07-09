@@ -20,6 +20,12 @@ model User {
   workspaceId String
   avatar String?
   accessToken String?
+  // The integration's Notion bot user id for this workspace (from users.me() at
+  // OAuth). Notion stamps this id on last_edited_by for the app's own write-back
+  // edits, so detection can tell a resolve write-back apart from a human edit
+  // (bug-001 anti-loop). Nullable: rows created before this field, or via paths
+  // that don't run OAuth, have none.
+  botId       String?
   createdAt  DateTime   @default(now())
   snapshots  Snapshot[]
   conflicts1 Conflict[] @relation("ConflictUser1")

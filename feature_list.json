@@ -1,6 +1,6 @@
 {
   "project": "concord-notion-conflict-dashboard",
-  "last_updated": "2026-07-04",
+  "last_updated": "2026-07-09",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -469,8 +469,55 @@
       "notes": "Passing — verified live 2026-07-04 (deterministic self-delivered signed webhook -> emit -> SSE frame, plus a headless-browser run showing the new conflict card appear with no reload and the EventSource reconnecting after an Express bounce). Completes the real-time story started by sync-005: sync-005 lands the conflict in Postgres within seconds of a Notion edit, but app/Dashboard/page.tsx is a Next.js server component that today only reflects new rows on load/refresh — so the user still has to refresh to see it. This feature adds the missing server->browser push so the OPEN dashboard updates with no user action. Transport chosen: SSE (maintainer confirmed over WebSocket during implementation), one-directional server->client, zero new dependencies. Depends on sync-005 (event-driven conflict creation), conflict-007 (change-based detection), and conflict-002/conflict-005 (dashboard conflict rendering + resolve UI). Design leaning (confirm at implementation): SSE over WebSocket — updates are one-directional server->client, SSE is simpler over the existing Express+CORS setup and auto-reconnects; a client-side interval poll of GET /conflicts is an acceptable MVP fallback (also satisfies 'no refresh/button') but is periodic, not true push. Inherits the pre-existing dynamic-rendering caveat that every feature touching app/Dashboard/page.tsx carries (see conflict-002). COUPLING NOTE for whoever resolves conflict-007's open 'wire detectConflicts into the 60s poller?' question: the SSE emit lives in the webhook handler (server/api/webhooks.ts), NOT inside detectConflicts(), so if detection is ever wired into another in-process path (e.g. the sync-002 poller), that path must ALSO call emitConflictsCreated({ pageId, count }) or conflicts it creates will silently not push to open dashboards. DEPLOY-002 NOTE: app/components/conflict-live-updates/ConflictLiveUpdates.tsx adds a new hardcoded 'http://localhost:3001/events' reference — joins the running deploy-002 inventory (login.jsx, runSync.ts, auth.ts redirectUri, SyncNowButton's SYNC_ENDPOINT, ResolveConflictButtons) that breaks under a hosted split. Inserted at priority 18 on maintainer instruction; team-001..deploy-002 bumped +1 (same insertion pattern used for conflict-007 and sync-005)."
     },
     {
-      "id": "team-001",
+      "id": "bug-001",
       "priority": 19,
+      "area": "conflict",
+      "type": "bug",
+      "title": "Resolved conflict still appears in the dashboard after Keep-User1/User2",
+      "user_visible_behavior": "After clicking 'Keep User1' or 'Keep User2', the kept version is written back to the real Notion block (verified in Notion), but the conflict card stays visible in the dashboard conflict list instead of disappearing.",
+      "status": "in_progress",
+      "reported": "2026-07-09",
+      "expected": "Once a conflict is resolved, its card is removed from the dashboard (the list is filtered to status='unresolved' and router.refresh() re-runs that query).",
+      "actual": "Notion write-back succeeds and the Conflict row is set to status='resolved', but a card for that block remains in the UI.",
+      "repro": [
+        "Have at least one unresolved conflict on the dashboard.",
+        "Click 'Keep User1' (or 'Keep User2').",
+        "Confirm the kept content lands in the Notion block (write-back works).",
+        "Observe the dashboard: a conflict card for the same block is still shown."
+      ],
+      "suspected_cause": [
+        "The successful write-back edits the Notion block, which fires the webhook (sync-005) -> sync -> detectConflicts, and change-based detection (conflict-007, still in_progress) likely records the write-back itself as a NEW unresolved Conflict row. The resolvedContent anti-loop guard added in conflict-006/007 may not be matching, so a fresh card reappears.",
+        "Alternatively the live-updates stream (dash-005) re-emits/keeps the conflict client-side even after router.refresh() clears the server-rendered card.",
+        "Confirm which by checking the DB after resolve: if a new Conflict row (new id, status='unresolved') exists for the same blockId, it's the re-detection path; if only the original row exists (now status='resolved') yet the card persists, it's the live-updates/refresh path."
+      ],
+      "verification": [
+        "ORDERING (fix + cleanup are inert until botId is populated): deploy -> a connected user re-runs Notion OAuth (populates User.botId) -> run cleanup -> verify. Before any re-auth, every User.botId is null, so the detection guard matches nothing and cleanup no-ops ('No User.botId values found').",
+        "Apply migration when DB reachable: `npx prisma migrate deploy` (or migrate dev).",
+        "LINCHPIN assertion (proves the fix's core assumption): after a real Keep-User1 write-back, read the newly-created Snapshot for that block and assert snapshot.notionLastEditedBy === the acting user's User.botId. The whole fix depends on users.me() botDetails.id equalling the last_edited_by Notion stamps on the write-back; this is the one check that confirms it directly.",
+        "Confirm the IDENTITY guard (not the fallback) did the work: the detection run must log '[detect] suppressed write-back landing on block <id> (edited by bot <id>)'. A '0 conflicts' result alone is NOT sufficient — the resolvedContent/time fallback can also yield 0 in a clean case and would mask a broken identity guard.",
+        "Real e2e (Keep User1 specifically): OAuth -> create a 2-user edit conflict -> Keep User1 -> confirm kept text lands in Notion -> confirm the next webhook re-sync logs the suppression line above AND '[webhook] DONE ... 0 conflict(s) created', with no new unresolved row; card stays gone.",
+        "Offline mechanism check (secondary, NOT primary evidence — it is circular on the id equality since you seed both sides): seed User.botId='bot-x' + a snapshot A' with notionLastEditedBy='bot-x' after a resolved conflict; detectConflicts() -> 0 created. Proves the guard fires when ids match; does not prove real Notion produces that match (the linchpin assertion does).",
+        "Run `cd server && npm run cleanup-bot-conflicts` once (after re-auth) to clear pre-existing stuck rows.",
+        "./init.sh baseline smoke check still passes."
+      ],
+      "evidence": [
+        "Offline checks passed: `npx prisma generate` regenerated the client with User.botId (56 refs in app/generated/prisma). conflict.ts + auth.ts import-load cleanly via tsx. Cleanup script transpiles via esbuild.",
+        "PENDING (DB unreachable from this env — Supabase aws-0-ap-southeast-2 TCP:5432 refused even with sandbox off): apply migration, run offline reproduce->fix, real Notion Keep-User1 e2e, ./init.sh baseline."
+      ],
+      "notes": "Fix implemented and offline-verified; behavioral verification (above) is PENDING because the Supabase DB is unreachable from the dev environment. Handoff ordering is load-bearing: the fix and cleanup do nothing until a connected user re-authenticates (User.botId is null on all existing rows until re-OAuth). Caveat: collecting all botIds only protects write-backs whose acting token belongs to a re-authed user; a write-back driven by a still-null-botId user's token falls through to the fragile resolvedContent/time fallback. Per AGENTS.md, do not commit until the maintainer reviews. Related: conflict-006 (write-back), conflict-007 (change-based detection).",
+      "root_cause_confirmed": "Confirmed. The reappearing card is a NEW unresolved Conflict row, not the original. Reproduces on 'Keep User1' (restoring the non-current side): the write-back genuinely edits the block -> webhook -> detectConflicts creates a fresh row. The resolvedContent/time anti-loop guard (conflict.ts) is brittle: exact content equality breaks on Notion's write-back round-trip reformatting, and resolvedAt>=prev.createdAt compares two clocks (app new Date() vs Postgres now()). 'Keep User2' is a content no-op already caught by the sourceSnapshotId dedup. Live-updates (dash-005) holds no client state; it only surfaces the new DB row faster.",
+      "fix_implemented": "Identity-based anti-loop. The resolve write-back is an API edit, so Notion stamps the block's last_edited_by with the integration's bot user id. Persist that id (User.botId, from botDetails.id at OAuth) and, in detectConflicts, skip any change whose new-side snapshot.notionLastEditedBy is a known bot id. Exact identity match — immune to content reformatting and clock skew. The old resolvedContent/time guard is kept as a fallback.",
+      "changes": [
+        "prisma/schema.prisma: add User.botId String?",
+        "prisma/migrations/20260709120000_add_user_bot_id/migration.sql: ALTER TABLE \"User\" ADD COLUMN \"botId\" TEXT (hand-authored; NOT yet applied — DB unreachable from the dev env).",
+        "server/api/auth.ts: persist botId: botDetails.id in the OAuth upsert (create + update).",
+        "server/lib/conflict.ts: build botIds set from User.botId; primary guard `if (next.notionLastEditedBy && botIds.has(...)) continue;` before conflict.create.",
+        "server/scripts/resolveBotWritebackConflicts.ts (+ npm run cleanup-bot-conflicts): one-off, marks existing bot-authored stuck rows status=resolved, resolvedBy='system:bug-001' (non-destructive)."
+      ]
+    },
+    {
+      "id": "team-001",
+      "priority": 20,
       "area": "team",
       "title": "GET /team lists workspace members",
       "user_visible_behavior": "The app can list all users connected to the same workspace as one team.",
@@ -485,7 +532,7 @@
     },
     {
       "id": "team-002",
-      "priority": 20,
+      "priority": 21,
       "area": "team",
       "title": "Email notification when a new conflict is detected (nodemailer)",
       "user_visible_behavior": "When a new conflict is detected, the involved team members receive an email notification.",
@@ -500,7 +547,7 @@
     },
     {
       "id": "team-003",
-      "priority": 21,
+      "priority": 22,
       "area": "team",
       "title": "Team members page (avatar, name, conflict count)",
       "user_visible_behavior": "A team page shows each member's avatar, name, and how many conflicts they are involved in.",
@@ -515,7 +562,7 @@
     },
     {
       "id": "team-004",
-      "priority": 22,
+      "priority": 23,
       "area": "team",
       "title": "Filter conflicts by member and new-conflict notification badge",
       "user_visible_behavior": "The user can filter the conflicts list by team member and sees a badge on the dashboard when a new conflict arrives.",
@@ -530,7 +577,7 @@
     },
     {
       "id": "polish-001",
-      "priority": 23,
+      "priority": 24,
       "area": "polish",
       "title": "Error, loading, and empty states + mobile responsiveness",
       "user_visible_behavior": "The app handles errors gracefully, shows loading indicators while fetching, shows friendly empty states, and is usable on mobile.",
@@ -546,7 +593,7 @@
     },
     {
       "id": "deploy-001",
-      "priority": 24,
+      "priority": 25,
       "area": "deploy",
       "title": "Seed demo data for showcase",
       "user_visible_behavior": "A seed script populates realistic demo users, pages, snapshots, and conflicts so the dashboard looks populated for a demo.",
@@ -561,7 +608,7 @@
     },
     {
       "id": "deploy-002",
-      "priority": 25,
+      "priority": 26,
       "area": "deploy",
       "title": "Deploy to Supabase + Render + Vercel",
       "user_visible_behavior": "The app is reachable at a public URL: frontend on Vercel, backend on Render, database on Supabase.",
@@ -577,7 +624,7 @@
     },
     {
       "id": "team-005",
-      "priority": 26,
+      "priority": 27,
       "area": "team",
       "title": "Connected members page — shown only after Notion OAuth login",
       "user_visible_behavior": "After a user logs in via Notion OAuth, they can open a members page that lists the members connected to their workspace (name, avatar, email). The page is gated behind login — an unauthenticated visitor does not see the members list.",
@@ -593,7 +640,7 @@
     },
     {
       "id": "team-006",
-      "priority": 27,
+      "priority": 28,
       "area": "team",
       "title": "Decide connection model: one 'main' connected user vs. every member connecting via OAuth",
       "user_visible_behavior": "A documented, confirmed decision on whether Concord requires each teammate to connect via Notion OAuth, or can run on a single 'main' connected user — with the attribution behaviour of each option made explicit so the team page and conflict attribution are not misleading.",

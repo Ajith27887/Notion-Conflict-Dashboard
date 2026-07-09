@@ -8,7 +8,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "tsx --env-file=../.env server.js",
     "sync": "tsx --env-file=../.env scripts/runSync.ts",
-    "detect-conflicts": "tsx --env-file=../.env scripts/runDetectConflicts.ts"
+    "detect-conflicts": "tsx --env-file=../.env scripts/runDetectConflicts.ts",
+    "cleanup-bot-conflicts": "tsx --env-file=../.env scripts/resolveBotWritebackConflicts.ts"
   },
   "author": "",
   "license": "ISC",

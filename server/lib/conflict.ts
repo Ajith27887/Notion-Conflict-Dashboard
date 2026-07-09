@@ -104,9 +104,21 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 	const syncWorkspaceId = syncCtx?.workspaceId ?? null;
 
 	const users = await prisma.user.findMany({
-		select: { id: true, notionId: true },
+		select: { id: true, notionId: true, botId: true },
 	});
 	const usersByNotionId = new Map(users.map((user) => [user.notionId, user.id]));
+
+	// Anti-loop (bug-001): the conflict-006 resolve write-back is an API edit, so
+	// Notion stamps the block's last_edited_by with the integration's bot user id
+	// (persisted on User.botId at OAuth, captured into Snapshot.notionLastEditedBy
+	// at sync time). The app only ever edits blocks via that write-back, so any
+	// change whose NEW side was authored by our bot is a write-back landing, not a
+	// human conflict. Matching on this identity is exact and immune to the content
+	// round-trip / cross-clock fragility of the resolvedContent guard below. All
+	// known bot ids are collected because detection is global (no workspace filter).
+	const botIds = new Set(
+		users.map((user) => user.botId).filter((id): id is string => id !== null),
+	);
 
 	// Dedup set: every change already recorded, resolved conflicts included —
 	// a resolved change must never resurrect as a new unresolved conflict.
@@ -222,10 +234,22 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 			continue;
 		}
 
-		// Anti-loop: this "change" is a conflict-006 write-back landing — the
-		// resolution wrote exactly this content, and the pre-change snapshot
+		// Anti-loop (primary, bug-001): the new side was authored by our own
+		// integration bot, so this change is a resolve write-back landing, never a
+		// human conflict. Exact identity match — no content/timestamp comparison,
+		// so it holds even when Notion reformats the written text or clocks skew.
+		if (next.notionLastEditedBy && botIds.has(next.notionLastEditedBy)) {
+			// Logged so verification can confirm THIS guard (not the resolvedContent
+			// fallback below) suppressed the write-back landing.
+			console.log(`[detect] suppressed write-back landing on block ${blockId} (edited by bot ${next.notionLastEditedBy}).`);
+			continue;
+		}
+
+		// Anti-loop (fallback): this "change" is a conflict-006 write-back landing —
+		// the resolution wrote exactly this content, and the pre-change snapshot
 		// predates the resolution. A genuinely later human re-edit to the same
-		// text has prev AFTER resolvedAt and is still flagged.
+		// text has prev AFTER resolvedAt and is still flagged. Still covers rows
+		// predating User.botId and tokenless/legacy paths.
 		const blockResolutions = resolutionsByBlock.get(blockId) ?? [];
 		const isWritebackLanding = blockResolutions.some(
 			(resolution) =>

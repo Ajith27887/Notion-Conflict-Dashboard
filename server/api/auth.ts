@@ -64,6 +64,13 @@ router.get("/callback",async (req: Request, res: Response) => {
                     return res.status(400).send("Workspace ID missing from Notion response.");
                 }
 			
+				// botDetails.id is the integration's bot user id for this workspace —
+				// the same id Notion stamps on last_edited_by for the app's own
+				// write-back edits. Persist it so detection can suppress those edits
+				// as write-back landings rather than flagging them as new conflicts
+				// (bug-001 anti-loop).
+				const botId = botDetails.id;
+
 				const newUser = await prisma.user.upsert({
 					where :{ notionId: userProfile.id },
 					update : {
@@ -71,7 +78,8 @@ router.get("/callback",async (req: Request, res: Response) => {
 						email: userEmail,
 						workspaceId:  workspaceId,
 						avatar : userAvatar,
-						accessToken : AccessToken
+						accessToken : AccessToken,
+						botId : botId
 					},
 					create : {
 						name: userName,
@@ -79,7 +87,8 @@ router.get("/callback",async (req: Request, res: Response) => {
 						workspaceId:  workspaceId,
 						notionId: userProfile.id,
 						avatar : userAvatar,
-						accessToken : AccessToken
+						accessToken : AccessToken,
+						botId : botId
 					}
 				})
                 console.log("Successfully extracted:", { workSpaceName,workspaceId, userName, userEmail });
