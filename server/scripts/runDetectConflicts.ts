@@ -7,14 +7,27 @@ import { detectConflicts } from "../lib/conflict.js";
 //
 // Run from server/:  npm run detect-conflicts
 async function main() {
-	// Pass the first connected user's token/workspace so detection can name unmapped
-	// editors via Notion (team-006 Option B); falls back to syncing-user attribution
-	// if nobody has connected yet.
-	const user = await prisma.user.findFirst({ where: { accessToken: { not: null } } });
-	const summary = await detectConflicts(
-		user?.accessToken ? { accessToken: user.accessToken, workspaceId: user.workspaceId } : undefined,
-	);
-	console.log(`Conflict detection complete: ${summary.conflictsCreated} conflict(s) created.`);
+	// Public app: detection is per-workspace. Run it for every connected workspace,
+	// passing that workspace's token so unmapped editors can be named via Notion
+	// (team-006 Option B).
+	const users = await prisma.user.findMany({
+		where: { accessToken: { not: null } },
+		distinct: ["workspaceId"],
+	});
+	if (users.length === 0) {
+		console.log("Conflict detection: no connected workspace yet.");
+		return;
+	}
+	let total = 0;
+	for (const user of users) {
+		const summary = await detectConflicts(user.workspaceId, {
+			accessToken: user.accessToken!,
+			workspaceId: user.workspaceId,
+		});
+		total += summary.conflictsCreated;
+		console.log(`  workspace ${user.workspaceId}: ${summary.conflictsCreated} conflict(s) created.`);
+	}
+	console.log(`Conflict detection complete: ${total} conflict(s) created across ${users.length} workspace(s).`);
 }
 
 main()

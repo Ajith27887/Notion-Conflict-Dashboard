@@ -1,4 +1,6 @@
+import { redirect } from "next/navigation";
 import prisma from "../lib/prisma";
+import { getSessionUser } from "../lib/session";
 import Navbar from "../components/navbar/Navbar";
 import SyncNowButton from "../components/sync-now-button/SyncNowButton";
 import ResolveConflictButtons from "../components/resolve-conflict-buttons/ResolveConflictButtons";
@@ -18,19 +20,34 @@ const lastSyncedFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 export default async function Dashboard() {
+  // Public app: the dashboard is per-user. Resolve the session and scope every
+  // query to the viewer's workspace so one tenant never sees another's data.
+  // Conflict/Snapshot reach workspaceId through their page relation.
+  const session = await getSessionUser();
+  if (!session) {
+    redirect("/");
+  }
+  const { workspaceId } = session;
+
   const [conflicts, pages, statusCounts, topPageGroup] = await Promise.all([
     prisma.conflict.findMany({
-      where: { status: "unresolved" },
+      where: { status: "unresolved", page: { workspaceId } },
       orderBy: { createdAt: "desc" },
       include: { page: true, user1: true, user2: true },
     }),
     prisma.page.findMany({
+      where: { workspaceId },
       orderBy: { createdAt: "desc" },
       include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } },
     }),
-    prisma.conflict.groupBy({ by: ["status"], _count: { _all: true } }),
+    prisma.conflict.groupBy({
+      by: ["status"],
+      where: { page: { workspaceId } },
+      _count: { _all: true },
+    }),
     prisma.conflict.groupBy({
       by: ["pageId"],
+      where: { page: { workspaceId } },
       _count: { _all: true },
       orderBy: [{ _count: { pageId: "desc" } }, { pageId: "asc" }],
       take: 1,
@@ -60,7 +77,7 @@ export default async function Dashboard() {
         </p>
       </header>
       <main className="px-8 py-10">
-        <ConflictLiveUpdates />
+        <ConflictLiveUpdates workspaceId={workspaceId} />
         <StatCards
           total={total}
           resolved={resolved}

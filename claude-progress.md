@@ -7,8 +7,11 @@
 - Standard verification path: behavioral smoke check inside `./init.sh` — boots the
   Express server (3001) and Next dev (3000), asserts `GET /auth/` → 302 to
   `api.notion.com/v1/oauth/authorize` and `GET /` → 200, then tears both down.
-- Current highest-priority unfinished feature: `team-001` (GET /team lists
-  workspace members, priority 19). `dash-005` (live dashboard — new conflicts
+- Current active feature: `public-001` (convert to a public multi-tenant app,
+  priority 20) — implemented and locally verified in Session 020, `in_progress`
+  (code uncommitted, awaiting maintainer review + the live spike/isolation checks
+  and the DB migration, which require the maintainer). Next unfinished after that:
+  `team-001` (GET /team lists workspace members, priority 19). `dash-005` (live dashboard — new conflicts
   appear in real time via SSE, no refresh/button, priority 18) was implemented
   and verified in Session 018 and is `passing` (awaiting maintainer review before
   commit, per AGENTS.md — the code is in the working tree, uncommitted).
@@ -53,6 +56,58 @@
   committed tree the presence-based logic is still what runs.
 
 ## Session Log
+
+### Session 020
+
+- Date: 2026-07-10
+- Goal: Convert Concord from a single-tenant tool ("first connected user") into a
+  public multi-tenant app — feature `public-001`. Approved plan:
+  `/home/ajith/.claude/plans/dazzling-puzzling-pond.md`.
+- Maintainer decisions: Next owns user actions (Express keeps OAuth callback,
+  webhooks, poller, SSE); one workspace per user (scalar `workspaceId`, re-login
+  rebinds); token encryption-at-rest deferred (`public-002`).
+- Changes (all in the working tree, UNCOMMITTED):
+  - Schema landmine: removed the GLOBAL `@unique` on `Page.tittle` (two workspaces
+    with the same title silently dropped the second page). Migration
+    `20260710120000_drop_page_tittle_unique` (DROP INDEX `Page_tittle_key`)
+    authored; client regenerated. NOT yet applied to the DB.
+  - Sessions: Express `/auth/callback` mints a ~60s HS256 handoff JWT →
+    `<APP_BASE_URL>/auth/complete`; new `app/auth/complete/route.ts` verifies it and
+    sets an httpOnly session cookie (`app/lib/session.ts`, jose);
+    `app/auth/logout/route.ts` clears it. `server/lib/authToken.ts` (jsonwebtoken)
+    is the Express half.
+  - Scoping: `app/Dashboard/page.tsx` gates on `getSessionUser()` and scopes all
+    four queries by workspace; `server/lib/conflict.ts` `detectConflicts(workspaceId,
+    …)` scopes every query; `server/api/webhooks.ts` routes by event `workspace_id`
+    (first-user fallback if absent); `server/lib/syncScheduler.ts` polls each distinct
+    connected workspace; SSE (`server/api/events.ts` + `ConflictsCreatedEvent`) is
+    workspace-filtered.
+  - Actions: new `app/api/sync` + `app/api/conflicts/[id]/resolve` route handlers
+    authenticate via the session cookie and call Express with a jose service token;
+    Express `/sync` + `/conflicts` verify it, act on the asserted user, and enforce a
+    cross-tenant guard on resolve. Client buttons repoint to same-origin `/api/*`.
+  - Deps/env: added root dep `jose`; added `AUTH_SHARED_SECRET` + `APP_BASE_URL` to
+    the gitignored `.env` (local). No access token is logged.
+- Verification (behavioral, local — all PASSED 2026-07-10): `./init.sh` baseline;
+  `tsc --noEmit` clean (app + server); `/Dashboard` no-cookie → 307 to `/`;
+  `/api/sync` + `/api/conflicts/1/resolve` no-cookie → 401; Express `/sync`,
+  `/conflicts`, resolve without service token → 401; `/auth/complete?token=<valid>`
+  → 307 to `/Dashboard` + cookie set, and that cookie unlocks a scoped (empty)
+  `/Dashboard` 200; and the real action path (cookie → Next → jose service token →
+  Express `jsonwebtoken.verify`) reached the DB past token verification
+  ("Session user not found." 401 / "Conflict not found." 404), confirming
+  jose↔jsonwebtoken HS256 interop.
+- STILL REQUIRES MAINTAINER (live, cannot be done locally): the SPIKE (switch Notion
+  integration to Public; confirm a friend's edit in their workspace hits the webhook
+  with their `workspace_id`), two-account isolation, and title-collision (needs the
+  migration applied). MAINTAINER TO-DOs before deploy: set `AUTH_SHARED_SECRET`
+  (identical) in `.env` AND Vercel; set `APP_BASE_URL` on the server host to the
+  Vercel URL; apply the drop-page-tittle-unique migration to prod; switch the Notion
+  integration to Public.
+- `feature_list.json`: added `public-001` (priority 20, `in_progress`) plus
+  follow-ups `public-002` (token encryption), `public-003` (multi-workspace users),
+  `public-004` (poller scaling), all `not_started`.
+- State: code UNCOMMITTED — awaiting maintainer review per AGENTS.md before commit.
 
 ### Session 019
 

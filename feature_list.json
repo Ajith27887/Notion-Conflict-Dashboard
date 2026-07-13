@@ -727,6 +727,70 @@
         "EXISTING-DATA CLEANUP 2026-07-09 (the guard is forward-only; the request is an end-state 'show only two-user conflicts'): the pre-feature DB had 2 unresolved same-user conflicts (ids 10 & 11, both user1 vs user1, left by conflict-007's 'same editor counts' logic) still on the dashboard. With maintainer approval, deleteMany scoped to status=unresolved AND user1Id===user2Id removed exactly those 2 rows; the 3 genuine two-user unresolved rows and all resolved history were kept. After: 11 Conflict rows total, 3 unresolved, 0 unresolved same-user. Dashboard now shows only two-different-user conflicts."
       ],
       "notes": "Requested by the maintainer 2026-07-09 ('if user1 edited last then user1 edits again I don't want that as a conflict, I need only two different users' conflicts'). This CLOSES conflict-007's open design question #2 ('any content change vs only when two DIFFERENT users edited the same block'): conflict-007 shipped with 'any change counts, same editor included, trivially restrictable to distinct-editors-only later' -- this feature applies that restriction. DECISION (2026-07-09, maintainer): SKIP THE BLOCK when the latest content-changed pair is same-author -- do NOT scan further back for an older cross-user change (keeps conflict-007's 'only the latest change per block per run' behavior). Edge cases (accepted): a pre-migration prev (null notionLastEditedBy) falls back to its syncing user, so if that differs from the new editor it still flags; if both sides fall back to the same syncing user (tokenless/unmapped path) they compare equal and are skipped, consistent with 'same connected user'. Depends on conflict-007 (change-based detection + resolveEditor attribution). conflict-006 write-back and the resolve flow are unaffected (they consume Conflict rows, not detection). STAYS in_progress until the same-user/two-user verification above has actually run and evidence is recorded; then stop for maintainer review before committing (AGENTS.md)."
+    },
+    {
+      "id": "public-001",
+      "priority": 20,
+      "area": "auth",
+      "title": "Convert to a public multi-tenant app (per-user sessions + workspace-scoped data/actions/webhooks)",
+      "user_visible_behavior": "Multiple people can each connect their own Notion workspace and only ever see and act on their own workspace's conflicts. After Notion OAuth a first-party session cookie is set; the dashboard, Sync Now, and Resolve are all scoped to the logged-in user's workspace; webhook events route to the workspace they came from; and one tenant's edits never appear on another tenant's dashboard.",
+      "status": "in_progress",
+      "verification": [
+        "Baseline: ./init.sh smoke check PASSES (npx prisma generate OK; both servers boot; /auth/ -> 302 to Notion authorize; / -> 200). VERIFIED 2026-07-10.",
+        "Typecheck: `npx tsc --noEmit -p tsconfig.json` clean (covers app + server via **/*.ts include); server files also typecheck under nodenext. VERIFIED 2026-07-10.",
+        "Session gate: GET /Dashboard with no cookie -> 307 redirect to /. VERIFIED 2026-07-10.",
+        "Unauthenticated actions 401: POST /api/sync and PATCH /api/conflicts/1/resolve with no cookie -> 401 (reject at getSessionUser before any upstream call). VERIFIED 2026-07-10.",
+        "Express endpoints require the service token: POST /sync, GET /conflicts, PATCH /conflicts/:id/resolve with no Authorization -> 401 'Missing or invalid service token.'. VERIFIED 2026-07-10.",
+        "OAuth handoff round-trip: GET /auth/complete?token=<valid HS256 handoff> -> 307 to /Dashboard with a concord_session cookie set; that cookie then unlocks /Dashboard (200) with workspace-scoped (empty for an unknown workspace) data. VERIFIED 2026-07-10.",
+        "Cross-library JWT interop (the real prod action path): browser cookie -> Next /api/sync (jose-minted service token) -> Express jsonwebtoken.verify -> reaches user lookup ('Session user not found.' for an absent user, 401); resolve path likewise reaches 'Conflict not found.' (404). Confirms jose<->jsonwebtoken HS256 interop end-to-end. VERIFIED 2026-07-10.",
+        "REMAINING (maintainer, live): (1) SPIKE — switch the Notion integration to Public and confirm a friend's edit in THEIR workspace reaches the webhook carrying their workspace_id (gates webhook routing; poller is the fallback if not). (2) Two-workspace isolation — log in as A and B in separate browsers and confirm each sees only their own conflicts and cannot resolve the other's. (3) Title-collision — two workspaces each with an 'Untitled' page both sync (needs the migration applied). (4) grep server log confirms no access token is ever logged."
+      ],
+      "evidence": [
+        "IMPLEMENTED (2026-07-10). Schema: removed the GLOBAL @unique on Page.tittle (multi-tenant data-loss landmine — two workspaces with the same page title silently dropped the second); migration prisma/migrations/20260710120000_drop_page_tittle_unique (DROP INDEX Page_tittle_key) authored; client regenerated. Sessions: Next 'owns identity' — Express /auth/callback now mints a ~60s HS256 handoff JWT and redirects to <APP_BASE_URL>/auth/complete; new app/auth/complete/route.ts verifies it and sets an httpOnly SameSite=Lax session cookie (app/lib/session.ts, jose); app/auth/logout/route.ts clears it. Reads: app/Dashboard/page.tsx gates on getSessionUser() (redirect / if none) and scopes all four queries by workspaceId (relation filters via page). Detection: server/lib/conflict.ts detectConflicts(workspaceId, syncCtx?) scopes every query to one workspace; all callers updated. Webhook: server/api/webhooks.ts routes by event workspace_id (first-connected-user fallback if absent). Poller: server/lib/syncScheduler.ts iterates distinct connected workspaces. Actions: new app/api/sync and app/api/conflicts/[id]/resolve route handlers authenticate via the session cookie and call Express with a jose service JWT; Express /sync + /conflicts verify that token (server/lib/authToken.ts, jsonwebtoken), act on the asserted user, and enforce a cross-tenant guard on resolve; the write-back token fallback is workspace-scoped. SSE: server/api/events.ts filters by ?workspaceId= and ConflictsCreatedEvent carries workspaceId. Client SyncNowButton/ResolveConflictButtons repoint to same-origin /api/*. New root dep: jose. New env: AUTH_SHARED_SECRET (shared HS256 secret) + APP_BASE_URL (added to gitignored .env locally; MUST be set in Vercel + the server host for prod). NOT logged: no access token is emitted.",
+        "VERIFIED 2026-07-10 (behavioral, local): all curl-level checks above passed against freshly booted servers (see verification list). The jose<->jsonwebtoken interop path was exercised explicitly with the live session cookie, not just typechecked. The migration was NOT applied to the DB (prisma generate only) — Page_tittle_key still exists in prod until the maintainer runs migrate deploy."
+      ],
+      "notes": "Maintainer decisions (2026-07-10): Next owns user actions (Express keeps OAuth callback, webhooks, poller, SSE — the only long-running host); one workspace per user (scalar workspaceId, re-login rebinds); token encryption-at-rest DEFERRED (public-002). Approved plan: /home/ajith/.claude/plans/dazzling-puzzling-pond.md. STAYS in_progress: the live spike + two-workspace isolation + title-collision checks require the maintainer (Notion Public toggle + a second account) and the migration to be applied; stop for maintainer review before committing (AGENTS.md). MAINTAINER TO-DOs before deploy: set AUTH_SHARED_SECRET (identical) in .env AND Vercel; set APP_BASE_URL on the server host to the Vercel URL (defaults to it, but be explicit); apply the drop-page-tittle-unique migration to prod (migrate deploy via DIRECT_URL); switch the Notion integration to Public. KNOWN low-severity: /events?workspaceId= is not token-authenticated (anyone knowing a workspace UUID can subscribe), but the payload carries only {count,pageId}, no content."
+    },
+    {
+      "id": "public-002",
+      "priority": 21,
+      "area": "auth",
+      "title": "Encrypt Notion access tokens at rest",
+      "user_visible_behavior": "No visible change; users' stored Notion access tokens are encrypted in the database rather than plaintext.",
+      "status": "not_started",
+      "verification": [
+        "User.accessToken column stores ciphertext, not the raw token; decryption happens only in-process when a Notion client is constructed; key comes from a managed secret (not committed).",
+        "Existing rows migrate/rotate without breaking sync, webhook, or write-back."
+      ],
+      "evidence": [],
+      "notes": "Deferred from public-001 (auth-003 originally deferred encryption for the single-user MVP). Going public means custodying many users' tokens, so this is the priority hardening item before a wide public launch."
+    },
+    {
+      "id": "public-003",
+      "priority": 22,
+      "area": "auth",
+      "title": "Support one person across multiple Notion workspaces (User<->workspace many-to-many)",
+      "user_visible_behavior": "A person who belongs to two Notion workspaces can hold both connections at once and switch between them, instead of the current scalar workspaceId that rebinds on each re-login.",
+      "status": "not_started",
+      "verification": [
+        "A UserWorkspace join (or equivalent) lets one notionId map to multiple workspaces; the dashboard/session can select which workspace is active.",
+        "No regression to the one-workspace-per-user path."
+      ],
+      "evidence": [],
+      "notes": "Deferred from public-001 (maintainer chose one-workspace-per-user for the MVP). Only build if multi-workspace users become a real need."
+    },
+    {
+      "id": "public-004",
+      "priority": 23,
+      "area": "sync",
+      "title": "Scale the reconciliation poller beyond a handful of workspaces",
+      "user_visible_behavior": "No visible change; the fallback poll stays cheap as the number of connected workspaces grows.",
+      "status": "not_started",
+      "verification": [
+        "The poller no longer syncs every workspace on every 60s tick (e.g. staggered/per-workspace cadence, or webhook-only with a slow reconciliation pass)."
+      ],
+      "evidence": [],
+      "notes": "public-001 made the poller iterate all connected workspaces every tick — fine for a few, a known scaling smell at scale. Webhook-primary already mitigates; revisit when workspace count grows."
     }
   ]
 }

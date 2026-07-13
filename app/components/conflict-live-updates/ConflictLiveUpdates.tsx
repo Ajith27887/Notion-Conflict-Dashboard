@@ -8,14 +8,20 @@ import { apiUrl } from "@/app/lib/api";
 // push (a new conflict was detected server-side, e.g. via the sync-005 webhook),
 // revalidates the dashboard's Server Component so the new conflict appears with no
 // page reload and no button click. Behavior-only — renders nothing.
-const EVENTS_ENDPOINT = apiUrl("/events");
+//
+// Public app: the stream is subscribed with the viewer's workspaceId so it only
+// revalidates on this tenant's conflicts (the Express /events endpoint filters).
 
-export default function ConflictLiveUpdates() {
+type ConflictLiveUpdatesProps = {
+	workspaceId: string;
+};
+
+export default function ConflictLiveUpdates({ workspaceId }: ConflictLiveUpdatesProps) {
 	const router = useRouter();
 	const [, startTransition] = useTransition();
 
 	useEffect(() => {
-		const source = new EventSource(EVENTS_ENDPOINT);
+		const source = new EventSource(apiUrl(`/events?workspaceId=${encodeURIComponent(workspaceId)}`));
 		source.onmessage = () => {
 			// Same revalidation path SyncNowButton/ResolveConflictButtons use:
 			// router.refresh() re-queries Prisma in the Server Component and swaps in
@@ -28,7 +34,7 @@ export default function ConflictLiveUpdates() {
 		// No onerror handler needed: EventSource reconnects on its own after a drop
 		// (the server also sends `retry: 3000`), which is the resilience requirement.
 		return () => source.close();
-	}, [router, startTransition]);
+	}, [router, startTransition, workspaceId]);
 
 	return null;
 }

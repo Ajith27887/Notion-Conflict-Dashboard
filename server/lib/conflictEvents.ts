@@ -14,6 +14,11 @@ export const conflictEvents = new EventEmitter();
 conflictEvents.setMaxListeners(0);
 
 export type ConflictsCreatedEvent = {
+	// The workspace the conflict(s) belong to. The SSE endpoint (events.ts) only
+	// forwards a frame to a browser whose EventSource subscribed with the SAME
+	// workspaceId, so a conflict in one tenant never nudges another tenant's
+	// dashboard to revalidate (public app conversion).
+	workspaceId: string;
 	// The local Page.id the conflict(s) landed on (null when a full-workspace
 	// fallback sync ran, i.e. the edited page was not tracked). The browser client
 	// ignores the payload and simply revalidates; this is carried per the feature

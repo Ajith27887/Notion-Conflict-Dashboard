@@ -14,6 +14,11 @@ const router = express.Router();
 // origin the EventSource GET sends, and the global express.json({ verify }) hook is
 // a no-op on this bodyless GET — neither needs a change.
 router.get("/", (req: Request, res: Response) => {
+	// Public app: each dashboard subscribes with its own ?workspaceId= so it only
+	// receives its own tenant's conflict signals. A missing workspaceId subscribes
+	// to nothing (no cross-tenant leakage) rather than to everything.
+	const subscribedWorkspaceId = typeof req.query.workspaceId === "string" ? req.query.workspaceId : null;
+
 	res.writeHead(200, {
 		"Content-Type": "text/event-stream",
 		"Cache-Control": "no-cache",
@@ -24,6 +29,10 @@ router.get("/", (req: Request, res: Response) => {
 	res.write(": connected\n\n");
 
 	const onConflict = (payload: ConflictsCreatedEvent) => {
+		// Only forward frames for the workspace this client subscribed to.
+		if (!subscribedWorkspaceId || payload.workspaceId !== subscribedWorkspaceId) {
+			return;
+		}
 		res.write(`data: ${JSON.stringify(payload)}\n\n`);
 	};
 	conflictEvents.on("conflictsCreated", onConflict);

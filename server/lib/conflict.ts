@@ -97,13 +97,21 @@ function norm(content: string | null): string {
 	return content ?? "";
 }
 
-export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSummary> {
+export async function detectConflicts(
+	workspaceId: string,
+	syncCtx?: SyncContext,
+): Promise<ConflictSummary> {
+	// Public app: detection is scoped to ONE workspace per run. Every query below
+	// filters to `workspaceId` (directly on User, or through the page relation on
+	// Snapshot/Conflict) so one tenant's snapshots/conflicts never mix with
+	// another's — and so a per-workspace webhook/poll only scans its own data.
+	//
 	// team-006 Option B: name unmapped editors via Notion. No context -> no lookups,
 	// attribution stays as it was (fall back to the syncing user).
 	const notion = syncCtx ? new Client({ auth: syncCtx.accessToken }) : null;
-	const syncWorkspaceId = syncCtx?.workspaceId ?? null;
 
 	const users = await prisma.user.findMany({
+		where: { workspaceId },
 		select: { id: true, notionId: true, botId: true },
 	});
 	const usersByNotionId = new Map(users.map((user) => [user.notionId, user.id]));
@@ -114,8 +122,9 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 	// at sync time). The app only ever edits blocks via that write-back, so any
 	// change whose NEW side was authored by our bot is a write-back landing, not a
 	// human conflict. Matching on this identity is exact and immune to the content
-	// round-trip / cross-clock fragility of the resolvedContent guard below. All
-	// known bot ids are collected because detection is global (no workspace filter).
+	// round-trip / cross-clock fragility of the resolvedContent guard below. Scoped
+	// to this workspace's users — the integration's bot id per workspace is what
+	// stamps that workspace's write-back edits.
 	const botIds = new Set(
 		users.map((user) => user.botId).filter((id): id is string => id !== null),
 	);
@@ -123,7 +132,7 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 	// Dedup set: every change already recorded, resolved conflicts included —
 	// a resolved change must never resurrect as a new unresolved conflict.
 	const existingConflicts = await prisma.conflict.findMany({
-		where: { sourceSnapshotId: { not: null } },
+		where: { sourceSnapshotId: { not: null }, page: { workspaceId } },
 		select: { sourceSnapshotId: true },
 	});
 	const existingSources = new Set(existingConflicts.map((c) => c.sourceSnapshotId));
@@ -133,7 +142,7 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 	// block, which the next sync captures as a new change — recognized and
 	// suppressed below by content + time window.
 	const resolutions = await prisma.conflict.findMany({
-		where: { resolvedContent: { not: null } },
+		where: { resolvedContent: { not: null }, page: { workspaceId } },
 		select: { blockId: true, resolvedContent: true, resolvedAt: true },
 	});
 	const resolutionsByBlock = new Map<string, { resolvedContent: string; resolvedAt: Date | null }[]>();
@@ -156,7 +165,10 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 	// leave the DB, unlike the old full-table findMany.
 	const contentGroups = await prisma.snapshot.groupBy({
 		by: ["blockId", "content"],
-		where: { AND: [{ content: { not: null } }, { content: { not: "" } }] },
+		where: {
+			AND: [{ content: { not: null } }, { content: { not: "" } }],
+			page: { workspaceId },
+		},
 	});
 	const contentCountByBlock = new Map<string, number>();
 	for (const group of contentGroups) {
@@ -171,7 +183,7 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 	}
 
 	const snapshots = await prisma.snapshot.findMany({
-		where: { blockId: { in: candidateBlockIds } },
+		where: { blockId: { in: candidateBlockIds }, page: { workspaceId } },
 		orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 		select: {
 			id: true,
@@ -261,8 +273,8 @@ export async function detectConflicts(syncCtx?: SyncContext): Promise<ConflictSu
 			continue;
 		}
 
-		const user1Id = await resolveEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId, notion, syncWorkspaceId);
-		const user2Id = await resolveEditor(next.notionLastEditedBy, next.userId, usersByNotionId, notion, syncWorkspaceId);
+		const user1Id = await resolveEditor(prev.notionLastEditedBy, prev.userId, usersByNotionId, notion, workspaceId);
+		const user2Id = await resolveEditor(next.notionLastEditedBy, next.userId, usersByNotionId, notion, workspaceId);
 
 		// conflict-008: a conflict means two DIFFERENT people. If the same person
 		// authored both the previous and the new version (e.g. user1 edited last,

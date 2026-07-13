@@ -52,12 +52,27 @@ async function handleEvent(body: Record<string, unknown>): Promise<void> {
 	}
 	const notionPageId = entity.id;
 
-	// Webhook payloads carry no token — reuse the same "first connected user" the
-	// poller (sync-002) and POST /sync (sync-004) already select.
-	const user = await prisma.user.findFirst({ where: { accessToken: { not: null } } });
+	// Public app: route the event to the workspace it came from. Notion stamps the
+	// authorizing workspace on the event payload (workspace_id); we sync/detect with
+	// a connected user FROM THAT WORKSPACE so one tenant's edit never runs against
+	// another tenant's token/data. If the payload has no workspace_id (older Notion
+	// event shape, or a non-fanned-out subscription), fall back to the first connected
+	// user so a single-workspace deployment keeps working — logged so it's visible.
+	const eventWorkspaceId = typeof body.workspace_id === "string" ? body.workspace_id : null;
+	const user = eventWorkspaceId
+		? await prisma.user.findFirst({
+				where: { workspaceId: eventWorkspaceId, accessToken: { not: null } },
+			})
+		: await prisma.user.findFirst({ where: { accessToken: { not: null } } });
 	if (!user) {
-		console.log(`${LOG} skipped: no connected user with a Notion access token.`);
+		console.log(
+			`${LOG} skipped: no connected user with a Notion access token` +
+				(eventWorkspaceId ? ` for workspace ${eventWorkspaceId}.` : `.`),
+		);
 		return;
+	}
+	if (!eventWorkspaceId) {
+		console.warn(`${LOG} event carried no workspace_id — using first connected user (single-workspace fallback).`);
 	}
 	console.log(`${LOG} using connected user id=${user.id} workspace=${user.workspaceId}`);
 
@@ -80,6 +95,7 @@ async function handleEvent(body: Record<string, unknown>): Promise<void> {
 	// editors via Notion (team-006 Option B). user.accessToken is non-null here
 	// (selected on `accessToken: { not: null }`), but narrow for the type.
 	const detection = await detectConflicts(
+		user.workspaceId,
 		user.accessToken ? { accessToken: user.accessToken, workspaceId: user.workspaceId } : undefined,
 	);
 	console.log(
@@ -92,7 +108,11 @@ async function handleEvent(body: Record<string, unknown>): Promise<void> {
 	// dashboard never flickers. tracked?.id is the local Page.id (null on the
 	// full-workspace fallback path).
 	if (detection.conflictsCreated > 0) {
-		emitConflictsCreated({ pageId: tracked?.id ?? null, count: detection.conflictsCreated });
+		emitConflictsCreated({
+			workspaceId: user.workspaceId,
+			pageId: tracked?.id ?? null,
+			count: detection.conflictsCreated,
+		});
 	}
 }
 

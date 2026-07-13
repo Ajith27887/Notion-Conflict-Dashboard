@@ -2,9 +2,10 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { apiUrl } from "@/app/lib/api";
 
-const CONFLICTS_ENDPOINT = apiUrl("/conflicts");
+// Same-origin Next route (public app): sends the httpOnly session cookie; the
+// server enforces that the conflict belongs to the caller's workspace.
+const CONFLICTS_ENDPOINT = "/api/conflicts";
 
 type Side = "user1" | "user2";
 

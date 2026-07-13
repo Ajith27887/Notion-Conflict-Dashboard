@@ -2,13 +2,22 @@ import express from "express";
 import type { Request, Response } from "express";
 import prisma from "../PrismaClient.js";
 import { writeBlockContent, UnsupportedBlockTypeError } from "../lib/notionWriteback.js";
+import { verifyServiceToken } from "../lib/authToken.js";
 
 const router = express.Router();
 
 router.get("/", async (req: Request, res: Response) => {
 	try {
+		// Public app: scope to the caller's workspace. Without this, GET /conflicts
+		// leaked every tenant's conflicts. The Next layer is the browser-facing path;
+		// this endpoint requires the signed service token.
+		const claims = verifyServiceToken(req);
+		if (!claims) {
+			res.status(401).json({ message: "Missing or invalid service token." });
+			return;
+		}
 		const conflicts = await prisma.conflict.findMany({
-			where: { status: "unresolved" },
+			where: { status: "unresolved", page: { workspaceId: claims.workspaceId } },
 			orderBy: { createdAt: "desc" },
 		});
 		res.status(200).json(conflicts);
@@ -22,6 +31,14 @@ router.get("/", async (req: Request, res: Response) => {
 });
 
 router.patch("/:id/resolve", async (req: Request, res: Response) => {
+	// Public app: only the workspace that owns the conflict may resolve it. The Next
+	// /api/conflicts/[id]/resolve handler forwards the session user's signed token.
+	const claims = verifyServiceToken(req);
+	if (!claims) {
+		res.status(401).json({ message: "Missing or invalid service token." });
+		return;
+	}
+
 	const id = Number(req.params.id);
 	if (!Number.isInteger(id) || id <= 0) {
 		res.status(400).json({ message: "Invalid conflict id." });
@@ -50,9 +67,15 @@ router.patch("/:id/resolve", async (req: Request, res: Response) => {
 	try {
 		const existing = await prisma.conflict.findUnique({
 			where: { id },
-			include: { user1: true, user2: true },
+			include: { user1: true, user2: true, page: true },
 		});
 		if (!existing) {
+			res.status(404).json({ message: "Conflict not found." });
+			return;
+		}
+		// Cross-tenant guard: never let one workspace resolve another's conflict.
+		// 404 (not 403) so the endpoint doesn't confirm the id exists to an outsider.
+		if (existing.page.workspaceId !== claims.workspaceId) {
 			res.status(404).json({ message: "Conflict not found." });
 			return;
 		}
@@ -72,12 +95,17 @@ router.patch("/:id/resolve", async (req: Request, res: Response) => {
 			const otherUser = keep === "user1" ? existing.user2 : existing.user1;
 			// Prefer a participant's own token; but with team-006 Option B both
 			// participants can be token-less "shadow" users (neither connected via
-			// OAuth), so fall back to any connected user in the workspace — the same
-			// integration token sync/webhooks already write with.
+			// OAuth), so fall back to any connected user IN THE SAME WORKSPACE — the
+			// same integration token sync/webhooks already write with. Scoped to the
+			// conflict's workspace so we never write back with another tenant's token.
 			const accessToken =
 				keptUser.accessToken ??
 				otherUser.accessToken ??
-				(await prisma.user.findFirst({ where: { accessToken: { not: null } } }))?.accessToken ??
+				(
+					await prisma.user.findFirst({
+						where: { accessToken: { not: null }, workspaceId: existing.page.workspaceId },
+					})
+				)?.accessToken ??
 				null;
 			if (!accessToken) {
 				res.status(422).json({

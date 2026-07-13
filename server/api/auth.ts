@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { Client } from "@notionhq/client";
 import { BotUserObjectResponse } from "@notionhq/client/build/src/api-endpoints.js";
 import prisma from "../PrismaClient.js";
+import { signHandoffToken } from "../lib/authToken.js";
 
 
 const router = express.Router();
@@ -10,6 +11,12 @@ const router = express.Router();
 // OAuth redirect matches whatever host the server is deployed on.
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
 const redirectUri = `${API_BASE_URL}/auth/callback`
+// Base URL of the Next frontend. After OAuth we redirect the browser here with a
+// short-lived handoff token, and the Next /auth/complete route sets the first-party
+// session cookie. Defaults to the deployed Vercel URL so a forgotten env var on the
+// server host fails toward prod (not localhost); local dev overrides APP_BASE_URL to
+// http://localhost:3000 in .env.
+const APP_BASE_URL = (process.env.APP_BASE_URL ?? "https://notion-conflict-dashboard.vercel.app").replace(/\/$/, "")
 
 router.get("/", (req: Request, res: Response) => {
 	const clientId = process.env.CLIENT_ID;
@@ -96,7 +103,14 @@ router.get("/callback",async (req: Request, res: Response) => {
 					}
 				})
                 console.log("Successfully extracted:", { workSpaceName,workspaceId, userName, userEmail });
-                return res.redirect("https://notion-conflict-dashboard.vercel.app/Dashboard");
+
+                // Hand off to the Next frontend with a short-lived signed token
+                // carrying this user's id + workspace. /auth/complete verifies it and
+                // sets the first-party httpOnly session cookie, then lands the user on
+                // /Dashboard. The token (not the access token) is what crosses the
+                // redirect; it expires in ~60s.
+                const handoff = signHandoffToken({ userId: newUser.id, workspaceId });
+                return res.redirect(`${APP_BASE_URL}/auth/complete?token=${encodeURIComponent(handoff)}`);
             } else {
                 return res.status(400).send("Incomplete user profile received from Notion.");
             }

@@ -34,7 +34,12 @@ model User {
 
 model Page {
   id           Int        @id @default(autoincrement())
-  tittle       String     @unique
+  // NOT globally unique: two different workspaces can legitimately have a page
+  // with the same title ("Untitled", "Roadmap", ...). notionPageId below is the
+  // real identity. A global @unique here silently dropped the second workspace's
+  // same-titled page during sync (the upsert threw, swallowed by snapshotPage's
+  // per-page try/catch) — a multi-tenant data-loss bug (public app conversion).
+  tittle       String
   workspaceId String
   notionPageId String     @unique
   snapshots    Snapshot[]

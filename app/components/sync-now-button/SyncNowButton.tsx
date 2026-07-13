@@ -2,9 +2,10 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { apiUrl } from "@/app/lib/api";
 
-const SYNC_ENDPOINT = apiUrl("/sync");
+// Same-origin Next route (public app): sends the httpOnly session cookie so the
+// server knows which workspace to sync. It proxies to Express with a service token.
+const SYNC_ENDPOINT = "/api/sync";
 
 export default function SyncNowButton() {
 	const router = useRouter();
