@@ -1,0 +1,22 @@
+{
+  // The Express server is a separate deploy target (Render) with its own
+  // package.json/node_modules, so it is excluded from the root tsconfig — the
+  // Next build on Vercel installs only the root deps and would fail to resolve
+  // server-only packages like jsonwebtoken. It runs under tsx (no build step);
+  // this config exists so `tsc --noEmit` still typechecks it here.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}
