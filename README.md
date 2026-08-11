@@ -31,6 +31,45 @@ Prisma client is generated to `app/generated/prisma` and shared by both.
 
 Core data models (`prisma/schema.prisma`): `User`, `Page`, `Snapshot`, `Conflict`.
 
+## How it works
+
+The core loop is **connect → sync → snapshot → detect → resolve → write back**.
+
+1. **Connect (OAuth).** A user clicks *Continue with Notion*. The Express backend
+   (`server/api/auth.ts`) runs Notion's OAuth exchange and stores a `User` row per
+   workspace with their profile and access token. It also records the integration's
+   **bot user id** — Notion stamps that id on any edit the app itself makes, which is
+   what lets detection later tell an app write-back apart from a real human edit
+   (the anti-loop guard).
+
+2. **Sync (poll Notion).** A scheduler (`server/lib/syncScheduler.ts`) runs about every
+   60 seconds, and the **Sync Now** button hits the same path on demand
+   (`server/lib/sync.ts`). For each connected workspace it walks the accessible pages
+   and, per block, extracts the plain-text content plus Notion's `last_edited_time`
+   and `last_edited_by` metadata.
+
+3. **Snapshot.** Each observed block state is stored as a `Snapshot` row (block id,
+   page, content, editor, timestamp). Snapshots are the historical record the
+   detector diffs against — nothing is flagged at read time.
+
+4. **Detect conflicts (`server/lib/conflict.ts`).** A conflict is recorded only when a
+   block's **content actually changed** between snapshots *and* the change is
+   attributed to **two different Notion editors**. The previous version becomes the
+   "User 1" side and the new version the "User 2" side. Editors are resolved to real
+   `User` rows via `notionId`; a teammate who never logged in is looked up in Notion
+   and persisted as a **shadow user** so their real name/avatar still appears. Only
+   the latest change per block is flagged (resolving a stale one would clobber the
+   block's current state). Edits stamped with the app's own bot id are ignored.
+
+5. **Resolve.** In the dashboard, **Keep User 1 / Keep User 2** picks a winner. The
+   backend records who resolved it and when, and pushes the chosen content **back into
+   the live Notion block** (`server/lib/notionWriteback.ts`) using the resolver's
+   token. Because that write-back is stamped with the app's bot id, the next sync
+   does not re-flag it as a new conflict.
+
+Manual/one-off equivalents of steps 2 and 4 are available as backend scripts
+(`run sync`, `run detect-conflicts`) — see [Useful scripts](#useful-scripts).
+
 ## Getting started
 
 ### Prerequisites
